@@ -8,7 +8,7 @@ version = "0.5.0"
 description = "SchedTask PrivCheck with BloodHound enrichment"
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "0xr0BIT", email = "r.unglaub@prosec-networks.com" }]
+authors = [{ name = "1r0BIT", email = "r.unglaub@prosec-networks.com" }]
 keywords = ["security", "bloodhound", "windows", "pentest", "taskscheduler"]
 requires-python = ">=3.9"
 dependencies = [
@@ -17,8 +17,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/0xr0BIT/TaskHound"
-Issues = "https://github.com/0xr0BIT/TaskHound/issues"
+Homepage = "https://github.com/1r0BIT/TaskHound"
+Issues = "https://github.com/1r0BIT/TaskHound/issues"
 
 [project.scripts]
 taskhound = "taskhound.cli:main"
