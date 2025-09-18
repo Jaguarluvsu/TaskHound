@@ -1,0 +1,324 @@
+# Core processing for a single target host.
+#
+# This module ties together SMB connection, task enumeration, XML parsing,
+# and high-value enrichment. The main entry point `process_target` returns
+# a list of printable strings suitable for the CLI while also appending
+# structured rows to `all_rows` for export.
+
+import traceback
+import os
+from typing import List, Dict, Optional, Tuple
+
+from impacket.smbconnection import SessionError
+
+from .smb.connection import smb_connect
+from .smb.tasks import smb_listdir, crawl_tasks
+from .parsers.task_xml import parse_task_xml
+from .parsers.highvalue import HighValueLoader
+from .utils.helpers import looks_like_domain_user
+from .utils.logging import good, warn, info
+from .smb.credguard import check_credential_guard
+
+
+def process_offline_directory(offline_dir: str, hv: Optional[HighValueLoader], 
+                             show_unsaved_creds: bool, all_rows: List[Dict], debug: bool) -> List[str]:
+    # Process previously collected XML files from a directory structure.
+    #
+    # Expected directory structure:
+    #   offline_dir/
+    #   ├── hostname1/
+    #   │   └── Windows/System32/Tasks/...
+    #   └── hostname2/
+    #       └── Windows/System32/Tasks/...
+    #
+    # Returns printable lines and populates all_rows for export.
+    out_lines: List[str] = []
+    
+    if not os.path.exists(offline_dir) or not os.path.isdir(offline_dir):
+        warn(f"Offline directory does not exist or is not a directory: {offline_dir}")
+        return out_lines
+    
+    # Look for host directories (subdirectories of offline_dir)
+    try:
+        host_dirs = [d for d in os.listdir(offline_dir) 
+                    if os.path.isdir(os.path.join(offline_dir, d))]
+    except Exception as e:
+        warn(f"Failed to list offline directory {offline_dir}: {e}")
+        return out_lines
+    
+    if not host_dirs:
+        warn(f"No host directories found in offline directory: {offline_dir}")
+        return out_lines
+    
+    total_hosts = len(host_dirs)
+    good(f"Offline mode: Found {total_hosts} host directories to process")
+    
+    for host in host_dirs:
+        host_path = os.path.join(offline_dir, host)
+        lines = _process_offline_host(host, host_path, hv, show_unsaved_creds, all_rows, debug)
+        out_lines.extend(lines)
+    
+    return out_lines
+
+
+def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLoader],
+                         show_unsaved_creds: bool, all_rows: List[Dict], debug: bool) -> List[str]:
+    # Process XML files for a single host from offline directory
+    out_lines: List[str] = []
+    xml_files = []
+    
+    # Walk the host directory to find all XML files
+    for root, dirs, files in os.walk(host_dir):
+        for file in files:
+            # Skip non-XML files or files that don't look like task files
+            if not file.endswith('.xml') and not (len(file) > 0 and file[0] != '.'):
+                continue
+            
+            file_path = os.path.join(root, file)
+            # Convert absolute path back to relative path from host directory
+            rel_path = os.path.relpath(file_path, host_dir)
+            # Convert to Windows-style path for consistency with online mode
+            rel_path = rel_path.replace(os.sep, "\\")
+            xml_files.append((rel_path, file_path))
+    
+    if not xml_files:
+        warn(f"{hostname}: No XML files found in offline directory")
+        return out_lines
+    
+    good(f"{hostname}: Processing {len(xml_files)} XML files from offline directory")
+    
+    priv_count = 0
+    priv_lines: List[str] = []
+    task_lines: List[str] = []
+    
+    for rel_path, file_path in xml_files:
+        try:
+            with open(file_path, 'rb') as f:
+                xml_bytes = f.read()
+        except Exception as e:
+            if debug:
+                warn(f"{hostname}: Failed to read {file_path}: {e}")
+            continue
+        
+        meta = parse_task_xml(xml_bytes)
+        runas = meta.get("runas")
+        if not runas:
+            # If we can't determine who the task runs as, skip it for now
+            continue
+
+        what = meta.get("command") or ""
+        if meta.get("arguments"):
+            what = f"{what} {meta.get('arguments')}"
+
+        row = _build_row(hostname, rel_path, meta)
+
+        # Determine if the task stores credentials or runs with token/S4U (no stored credentials)
+        logon_type = (meta.get("logon_type") or "").strip()
+        no_saved_creds = (not logon_type) or logon_type.lower() in ("interactivetoken", "s4u", "interactivetokenorpassword")
+        if no_saved_creds:
+            row["credentials_hint"] = "no_saved_credentials"
+
+        if hv and hv.loaded and hv.check_highvalue(runas):
+            # High-value match — mark as privileged if credentials are stored (or show unsaved creds)
+            if row.get("credentials_hint") == "no_saved_credentials":
+                reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+            else:
+                reason = "High Value match found"
+            # Only include tasks that store credentials (or show_unsaved_creds is True)
+            if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                priv_count += 1
+                row["type"] = "PRIV"
+                row["reason"] = reason
+        else:
+            # Only print TASK entries for domain users that are not explicitly marked as having no saved credentials,
+            # unless the user asked to show unsaved creds globally.
+            if looks_like_domain_user(runas):
+                if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date")))
+
+        # By default omit tasks that explicitly have no saved credentials unless the user asked to show them
+        if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+            all_rows.append(row)
+
+    lines = priv_lines + task_lines
+    total = len(xml_files)
+    good(f"{hostname}: Found {total} tasks, privileged {priv_count if (hv and hv.loaded) else 'N/A'}")
+    return lines
+
+
+def _build_row(host: str, rel_path: str, meta: Dict[str, str]) -> Dict[str, Optional[str]]:
+    # Create a structured dict for CSV/JSON export representing a task.
+    #
+    # Keeps the same keys used by the writer so rows can be dumped directly.
+    return {
+        "host": host,
+        "path": rel_path,
+        "type": "TASK",
+        "runas": meta.get("runas"),
+        "command": meta.get("command"),
+        "arguments": meta.get("arguments"),
+        "author": meta.get("author"),
+        "date": meta.get("date"),
+        "logon_type": meta.get("logon_type"),
+        "reason": None,
+        "credentials_hint": None,
+    }
+
+
+def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, date: str, extra_reason: Optional[str] = None) -> List[str]:
+    # Format a small pretty-print block used by the CLI output.
+    #
+    # kind is either 'PRIV' (privileged/high-value) or 'TASK' (normal task).
+    header = "[PRIV]" if kind == "PRIV" else "[TASK]"
+    base = [f"\n{header} {rel_path}", f"       RunAs  : {runas}", f"       What   : {what}"]
+    if author:
+        base.append(f"       Author : {author}")
+    if date:
+        base.append(f"       Date   : {date}")
+    if kind == "PRIV":
+        if extra_reason:
+            base.append(f"       Reason : {extra_reason}")
+        else:
+            base.append("       Reason : High Value match found")
+        # Add next step if this is a privileged user match, saved credentials, and (optionally) Credential Guard inactive
+        # This logic is only for pretty output, so we check for the typical reason string and absence of 'no_saved_credentials'
+        if (not extra_reason or "no saved credentials" not in extra_reason.lower()):
+            base.append("       Next Step: DPAPI Dump / Task Manipulation")
+    return base
+
+
+def process_target(target: str, domain: str, username: str, password: Optional[str],
+                   kerberos: bool, dc_ip: Optional[str], include_ms: bool,
+                   hv: Optional[HighValueLoader], debug: bool,
+                   all_rows: List[Dict], hashes: Optional[str] = None,
+                   show_unsaved_creds: bool = False, backup_dir: Optional[str] = None,
+                   credguard_detect: bool = False) -> List[str]:
+    # Connect to `target`, enumerate scheduled tasks, and return printable lines.
+    #
+    # - Attempts SMB authentication using either cleartext password or hashes.
+    # - Performs a quick check to see if the C$ share and Tasks folder are
+    #   accessible (this serves as a proxy for local admin rights).
+    # - Crawls tasks, parses each XML, and marks rows as PRIV when they match
+    #   the HighValue dataset and store credentials.
+    #
+    # The function is defensive: individual failures are logged and cause
+    # the function to continue where reasonable rather than raising.
+
+    out_lines: List[str] = []
+
+    credguard_status = None
+    try:
+        # Prefer explicit hashes parameter over password when provided
+        smb = smb_connect(target, domain, username, hashes or password, kerberos=kerberos, dc_ip=dc_ip)
+        good(f"{target}: Connected via SMB")
+        # Credential Guard detection (EXPERIMENTAL, only if enabled)
+        if credguard_detect:
+            credguard_status = check_credential_guard(smb, target)
+            if credguard_status:
+                info(f"{target}: Credential Guard detected (LsaCfgFlags/IsolatedUserMode)")
+            else:
+                info(f"{target}: Credential Guard not detected")
+    except Exception as e:
+        if debug:
+            traceback.print_exc()
+        msg = str(e)
+        if "STATUS_MORE_PROCESSING_REQUIRED" in msg:
+            warn(f"{target}: Kerberos auth failed (SPN not found?). Try using FQDNs or switch to NTLM (-k off).")
+        else:
+            warn(f"{target}: SMB connection failed: {e}")
+        return out_lines
+
+    # Quick local admin presence check
+    try:
+        _ = smb_listdir(smb, "C$", r"\Windows\System32\Tasks")
+        good(f"{target}: Local Admin Access confirmed")
+    except Exception:
+        if debug:
+            traceback.print_exc()
+        warn(f"{target}: Local admin check failed")
+
+    if not include_ms:
+        info(f"{target}: Crawling Scheduled Tasks (skipping \\Microsoft for speed)")
+    else:
+        warn(f"{target}: Crawling ALL Scheduled Tasks, including \\Microsoft (this may be slow!)")
+
+    try:
+        items = crawl_tasks(smb, include_ms=include_ms)
+    except SessionError:
+        if debug:
+            traceback.print_exc()
+        warn(f"{target}: Failed to Crawl Tasks. Skipping... (Are you Local Admin?)")
+        return out_lines
+    except Exception as e:
+        if debug:
+            traceback.print_exc()
+        warn(f"{target}: Unexpected error while crawling tasks: {e}")
+        return out_lines
+
+    # Create backup directory structure if backup is requested
+    backup_target_dir = None
+    if backup_dir:
+        backup_target_dir = os.path.join(backup_dir, target)
+        try:
+            os.makedirs(backup_target_dir, exist_ok=True)
+            good(f"{target}: Raw XML backup enabled - saving to {backup_target_dir}")
+        except Exception as e:
+            warn(f"{target}: Failed to create backup directory {backup_target_dir}: {e}")
+            backup_target_dir = None
+
+    total = len(items)
+    priv_count = 0
+    priv_lines: List[str] = []
+    task_lines: List[str] = []
+
+
+    for rel_path, xml_bytes in items:
+        meta = parse_task_xml(xml_bytes)
+        # Save raw XML to backup directory if requested
+        if backup_target_dir:
+            try:
+                # Create subdirectories as needed (mirroring the original structure)
+                backup_file_path = os.path.join(backup_target_dir, rel_path.replace("\\", os.sep))
+                backup_file_dir = os.path.dirname(backup_file_path)
+                os.makedirs(backup_file_dir, exist_ok=True)
+                with open(backup_file_path, "wb") as f:
+                    f.write(xml_bytes)
+            except Exception as e:
+                if debug:
+                    warn(f"{target}: Failed to backup {rel_path}: {e}")
+        runas = meta.get("runas")
+        if not runas:
+            continue
+        what = meta.get("command") or ""
+        if meta.get("arguments"):
+            what = f"{what} {meta.get('arguments')}"
+        row = _build_row(target, rel_path, meta)
+        # Add Credential Guard status to each row
+        row["credential_guard"] = credguard_status
+        # Determine if the task stores credentials or runs with token/S4U (no stored credentials)
+        logon_type = (meta.get("logon_type") or "").strip()
+        no_saved_creds = (not logon_type) or logon_type.lower() in ("interactivetoken", "s4u", "interactivetokenorpassword")
+        if no_saved_creds:
+            row["credentials_hint"] = "no_saved_credentials"
+        if hv and hv.loaded and hv.check_highvalue(runas):
+            if row.get("credentials_hint") == "no_saved_credentials":
+                reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+            else:
+                reason = "High Value match found"
+            if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                priv_count += 1
+                row["type"] = "PRIV"
+                row["reason"] = reason
+        else:
+            if looks_like_domain_user(runas):
+                if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date")))
+        if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+            all_rows.append(row)
+
+    lines = priv_lines + task_lines
+    backup_msg = f", {total} raw XMLs backed up" if backup_target_dir else ""
+    good(f"{target}: Found {total} tasks, privileged {priv_count if (hv and hv.loaded) else 'N/A'}{backup_msg}")
+    return lines

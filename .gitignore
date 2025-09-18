@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.eggs/
+dist/
+build/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Tools
+.pytest_cache/
+.coverage
+.idea/
+.vscode/
+
+# Example outputs
+examples/out/
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+
+# Lockfiles
+poetry.lock
+Pipfile.lock
