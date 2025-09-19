@@ -115,7 +115,7 @@ taskhound --offline ./backups --bh-data /path/to/bloodhound_export.json
 
 ## Demo Output
 
-Plain file (`examples/out/HOSTNAME.txt`):
+Console Output / Plain file:
 
 ```
 [+] HOSTNAME: Connected via SMB
@@ -137,13 +137,13 @@ Plain file (`examples/out/HOSTNAME.txt`):
 TaskHound accepts a CSV or JSON file (extension matters: `.csv` or `.json`) for the `--bh-data` option. The file must contain the following attributes (case-insensitive header names accepted):
 
 - `SamAccountName`
-- `sid`
+- `SID`
 
 You can use this query to generate the data:
 
 ```
 MATCH (u:User {highvalue:true})
-RETURN u.samaccountname AS SamAccountName, u.objectid as sid
+RETURN u.samaccountname AS SamAccountName, u.objectid as SID
 ORDER BY u.samaccountname
 ```
 
@@ -170,9 +170,11 @@ Use responsibly. The author(s) provide no warranty. See `LICENSE` for details.
 
 There are quite a few things that I want to add / refine when I get the time to do so.
 
+- Compatibility with BloodHound Community Edition Exports
 - NetExec Module
 - Standalone BOF for Data Collection (To be used with the --offline feature)
 - OpenGraph Integration for Attack Path Mapping
+- Automatically grabbing the corresponding Cred Blobs from Disk to decrypt them offline, given you acquired the key somehow
 
 ## Contributing
 
