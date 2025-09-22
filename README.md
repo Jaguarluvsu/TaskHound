@@ -257,8 +257,8 @@ save_directory/
 BOF-collected files work seamlessly with Python TaskHound:
 
 ```bash
-# After BOF collection with -save
-taskhound --offline C:\temp\collection --bh-data bloodhound_export.json
+# After BOF collection with -save (and transfer to your host)
+taskhound --offline /path/to/Tasks/ --bh-data /path/to/bloodhound_export.json
 ```
 
 ## Legal / License

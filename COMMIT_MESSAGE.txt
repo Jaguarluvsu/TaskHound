@@ -1,0 +1,33 @@
+feat: Release v0.6.0 - Security hardening, subdirectory traversal fixes, and summary table feature
+
+Security Improvements:
+- Replace all unsafe string functions (bof_strcpy/bof_strcat) with bounds-checked alternatives in BOF implementation
+- Add comprehensive buffer overflow protection and size validation
+- Refactor monolithic BOF code into secure, modular functions
+- Implement proper memory safety constants throughout codebase
+
+Critical Bug Fixes:
+- Fix missing subdirectory traversal in both Python and BOF implementations for C:\Windows\Tasks
+- Add recursive directory enumeration using FindFirstFile/FindNextFile in BOF
+- Correct task filtering logic to properly handle stored credentials regardless of username format
+- Align filtering behavior between online (SMB) and offline (XML) processing modes
+
+New Features:
+- Add --summary parameter for formatted task count tables showing privileged vs normal tasks per hostname
+- Display "N/A" for privileged tasks when --bh-data is not provided to prevent user confusion
+- Include helpful hints about BloodHound data requirements and output locations
+- Add comprehensive user feedback and error messaging
+
+Technical Improvements:
+- Maintain BOF optimization at 10.9KB while adding significant functionality
+- Ensure full backward compatibility with existing command-line interfaces
+- Enhance cross-platform consistency between Python and BOF implementations
+- Add comprehensive laboratory testing validation
+
+Files changed:
+- BOF/AdaptixC2/taskhound.c: Complete security refactoring and subdirectory traversal
+- taskhound/engine.py: Fixed credentials filtering logic
+- taskhound/config.py: Added --summary argument
+- taskhound/cli.py: Integrated summary functionality
+- taskhound/output/summary.py: New summary table implementation
+- pyproject.toml: Version bump to 0.6.0
