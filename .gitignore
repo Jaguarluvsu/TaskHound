@@ -28,3 +28,10 @@ examples/out/
 # Lockfiles
 poetry.lock
 Pipfile.lock
+
+# BOF compilation artifacts
+*.o
+*.obj
+*.exe
+BOF/AdaptixC2/taskhound.o
+BOF/AdaptixC2/taskhound.exe

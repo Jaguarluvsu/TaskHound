@@ -3,15 +3,24 @@
 Windows Privileged Scheduled Task Disovery Tool for fun and profit.
 
 
-TaskHound enumerates Windows System Scheduled Tasks over SMB (C:\Windows\System32\Tasks), parses Task XMLs, and attempts to identify tasks that run in the context of privileged accounts (and ideally stored credentials). It supports BloodHound Legacy high-value mappings by accepting a CSV or JSON export containing high-value users and SIDs.
+TaskHound enumerates Windows System Scheduled Tasks over SMB (C:\Windows\System32\Tasks), parses Task XMLs, and attempts to identify tasks that run in the context of privileged accounts (and ideally stored credentials). It supports BloodHound Legacy high-value mappings by accepting a CSV/JSON export containing high-value users and SIDs.
 
 ## Disclaimer
 
 TaskHound is strictly an audit and educational tool. Use only in environments you own or where you have explicit authorization to test. Seriously. Don't be a jerk.
 
+## EXPERIMENTAL Features
+
+Every feature or add-on listed here with an **EXPERIMENTAL** Tag is to be considered **UNSAFE** for prod environments. I have done limited testing in my lab. Don't blame me if the BOF for example messes up your op or gets you busted. You have been warned.
+
+## OPSEC considerations
+
+The Python version TaskHound relies heavily on impacket for SMB/RPC and Kerberos Shenanigans. The typical IOCs apply.
+If you really care about OPSEC: Use the BOF or collect manually. If you replicate the target folder structure, the `--offline` parameter can still be used.
+
 ## Quick start
 
-Install dependencies (recommended inside a venv):
+Install dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -77,7 +86,7 @@ Misc:
 Basic scan with password:
 
 ```bash
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.springfield.local' -t 'HOSTNAME/IP' --dc-ip 172.17.1.11
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.springfield.local' -t 'HOSTNAME/IP' --dc-ip IP
 ```
 
 Using NTLM hashes (either LM:NT or NT-only hex):
@@ -90,7 +99,7 @@ Kerberos with ccache (export KRB5CCNAME):
 
 ```bash
 export KRB5CCNAME=./homer.simpson.ccache
-taskhound -u 'homer.simpson' -k -d 'thesimpsons.springfield.local' -t 'HOSTNAME' --dc-ip 172.17.1.11
+taskhound -u 'homer.simpson' -k -d 'thesimpsons.springfield.local' -t 'HOSTNAME' --dc-ip IP
 ```
 
 Show tasks that have no saved credentials (Useful in some cases, disabled by default):
@@ -147,7 +156,16 @@ RETURN u.samaccountname AS SamAccountName, u.objectid as SID
 ORDER BY u.samaccountname
 ```
 
-## Credential Guard Detection (EXPERIMENTAL)
+If you want to have more high value targets than the default ones: Use custom queries. An example to mark everything as high value that has the keyword ADMIN in it:
+```
+MATCH (n) WHERE toUpper(n.name) CONTAINS "ADMIN"
+OR toUpper(n.azname) CONTAINS "ADMIN"
+OR toUpper(n.objectid) CONTAINS "ADMIN" 
+SET n.highvalue = true, n.highvaluereason = 'Node matched ADMIN keyword' 
+RETURN n
+```
+
+## **EXPERIMENTAL** Credential Guard Detection
 
 If enabled (--credguard-detect), TaskHound checks the remote registry for Credential Guard status (HKLM\SYSTEM\CurrentControlSet\Control\Lsa\LsaCfgFlags or IsolatedUserMode). If enabled, the output for each host/task will include:
 
@@ -155,24 +173,104 @@ If enabled (--credguard-detect), TaskHound checks the remote registry for Creden
 
 If not enabled or undetectable, the field will be false or null.
 
-This helps to determine if DPAPI dumps (aside of user vaults) are feasible on a given host. This feature is experimental for and may not be reliable on all Windows versions or VM environments.
+This helps to determine if DPAPI dumps (aside of user vaults) are feasible on a given host. This feature is still experimental for the time being and may not be reliable on all Windows versions or VM environments.
 
-## OPSEC considerations
+## **EXPERIMENTAL** BOF Implementation
 
-TaskHound relies heavily on impacket for SMB/RPC and Kerberos Shenanigans. The typical IOCs apply.
-If you really care about OPSEC: Do it manually. 
+TaskHound includes a **Beacon Object File (BOF)** implementation of the **core collection functionality** for **AdaptixC2**. I'm sure it can be translated to work with other C2 frameworks but this is left as an exercise for the reader.
+
+**Note**: The BOF is designed for initial data collection on a single host. For comprehensive analysis with high-value detection use the collected XML files with the main Python tool's `--offline` mode.
+
+### Compilation
+
+#### Quick Compilation
+```bash
+cd BOF/
+./compile.sh
+```
+
+#### Manual Compilation
+Requirements: **MinGW-w64** cross-compiler for Windows PE object files
+
+```bash
+# Install MinGW-w64 (macOS example)
+brew install mingw-w64
+
+# Compile manually
+cd BOF/AdaptixC2/
+x86_64-w64-mingw32-gcc -c taskhound.c -o taskhound.o \
+  -fno-stack-check -fno-stack-protector -mno-stack-arg-probe \
+  -fno-asynchronous-unwind-tables -fno-builtin -Os
+```
+
+### Usage
+
+#### Basic Commands
+```bash
+# Current user context (uses beacon's authentication)
+# Note: If using the current logon session, always prefer HOSTNAME over IP to avoid NTLM fallback!
+beacon > taskhound HOSTNAME/IP
+
+# With explicit credentials  
+beacon > taskhound HOSTNAME/IP thesimpsons\homer.simpson P@ssw0rd
+
+# With credential saving for offline analysis
+beacon > taskhound HOSTNAME/IP -save C:\temp\task_collection
+
+# Show all tasks including those without stored credentials
+beacon > taskhound HOSTNAME/IP -unsaved-creds
+```
+
+### Output
+```
+beacon > taskhound DC highpriv P@ssw0rd1337. -save C:\Temp\test
+
+[22/09 23:14:01] [*] Task: execute BOF
+[22/09 23:14:01] [*] Agent called server, sent [9.81 Kb]
+[+] TaskHound - Remote Task Collection
+[+] Target: DC
+[+] Using credentials: highpriv
+[+] Saved: C:\Temp\test\DC\Windows\System32\Tasks\Test1
+Test1: THESIMPSONS\Administrator is executing C:\Windows\System32\AcXtrnal.dll 1234 [STORED CREDS]
+[+] Saved: C:\Temp\test\DC\Windows\System32\Tasks\Test2
+Test2: THESIMPSONS\lowpriv is executing C:\Windows\System32\AboveLockAppHost.dll 123432 [STORED CREDS]
+[+] Collection complete. Found 2 tasks
+[22/09 23:14:01] [+] BOF finished
+```
+
+#### Directory Structure
+
+When using `-save`, creates Python TaskHound compatible structure:
+
+```
+save_directory/
+└── hostname/
+    └── Windows/
+        └── System32/
+            └── Tasks/
+                ├── Test1
+                ├── Test2
+```
+
+#### Offline Analysis Integration
+
+BOF-collected files work seamlessly with Python TaskHound:
+
+```bash
+# After BOF collection with -save
+taskhound --offline C:\temp\collection --bh-data bloodhound_export.json
+```
 
 ## Legal / License
 
 Use responsibly. The author(s) provide no warranty. See `LICENSE` for details.
 
-## RoadMap
+## Roadmap
 
 There are quite a few things that I want to add / refine when I get the time to do so.
 
 - Compatibility with BloodHound Community Edition Exports
 - NetExec Module
-- Standalone BOF for Data Collection (To be used with the --offline feature)
 - OpenGraph Integration for Attack Path Mapping
 - Automatically grabbing the corresponding Cred Blobs from Disk to decrypt them offline, given you acquired the key somehow
 

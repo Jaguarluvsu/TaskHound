@@ -70,8 +70,8 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
     # Walk the host directory to find all XML files
     for root, dirs, files in os.walk(host_dir):
         for file in files:
-            # Skip non-XML files or files that don't look like task files
-            if not file.endswith('.xml') and not (len(file) > 0 and file[0] != '.'):
+            # Skip system files that start with dot
+            if file.startswith('.'):
                 continue
             
             file_path = os.path.join(root, file)
@@ -131,9 +131,9 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
                 row["type"] = "PRIV"
                 row["reason"] = reason
         else:
-            # Only print TASK entries for domain users that are not explicitly marked as having no saved credentials,
-            # unless the user asked to show unsaved creds globally.
-            if looks_like_domain_user(runas):
+            # Only print TASK entries for domain users OR users with stored credentials,
+            # unless they are explicitly marked as having no saved credentials (and user didn't ask to see them)
+            if looks_like_domain_user(runas) or row.get("credentials_hint") == "stored_credentials":
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
                     task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date")))
 
@@ -151,6 +151,17 @@ def _build_row(host: str, rel_path: str, meta: Dict[str, str]) -> Dict[str, Opti
     # Create a structured dict for CSV/JSON export representing a task.
     #
     # Keeps the same keys used by the writer so rows can be dumped directly.
+    
+    # Determine credentials hint based on logon type
+    logon_type_raw = meta.get("logon_type")
+    logon_type = logon_type_raw.strip().lower() if logon_type_raw else ""
+    if logon_type == "password":
+        credentials_hint = "stored_credentials"
+    elif logon_type in ("interactive", "interactivetoken", "s4u"):
+        credentials_hint = "no_saved_credentials"
+    else:
+        credentials_hint = None
+    
     return {
         "host": host,
         "path": rel_path,
@@ -162,7 +173,7 @@ def _build_row(host: str, rel_path: str, meta: Dict[str, str]) -> Dict[str, Opti
         "date": meta.get("date"),
         "logon_type": meta.get("logon_type"),
         "reason": None,
-        "credentials_hint": None,
+        "credentials_hint": credentials_hint,
     }
 
 
@@ -301,6 +312,8 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
         no_saved_creds = (not logon_type) or logon_type.lower() in ("interactivetoken", "s4u", "interactivetokenorpassword")
         if no_saved_creds:
             row["credentials_hint"] = "no_saved_credentials"
+        elif logon_type.lower() == "password":
+            row["credentials_hint"] = "stored_credentials"
         if hv and hv.loaded and hv.check_highvalue(runas):
             if row.get("credentials_hint") == "no_saved_credentials":
                 reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
@@ -312,7 +325,8 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
                 row["type"] = "PRIV"
                 row["reason"] = reason
         else:
-            if looks_like_domain_user(runas):
+            # Show tasks for domain users OR users with stored credentials
+            if looks_like_domain_user(runas) or row.get("credentials_hint") == "stored_credentials":
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
                     task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date")))
         if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):

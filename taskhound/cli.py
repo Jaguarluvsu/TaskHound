@@ -6,6 +6,7 @@ from .config import build_parser, validate_args
 from .parsers.highvalue import HighValueLoader
 from .output.printer import print_results
 from .output.writer import write_plain, write_json, write_csv
+from .output.summary import print_summary_table
 from .engine import process_target, process_offline_directory
 
 def main():
@@ -17,10 +18,12 @@ def main():
 
     # Load HighValue data if provided
     hv = None
+    hv_loaded = False
     if args.bh_data:
         hv = HighValueLoader(args.bh_data)
         if hv.load():
             good("High Value target data loaded")
+            hv_loaded = True
         else:
             warn("Failed to load High Value target data")
 
@@ -78,3 +81,8 @@ def main():
         write_json(args.json, all_rows)
     if args.csv:
         write_csv(args.csv, all_rows)
+
+    # Print summary if requested
+    if args.summary:
+        backup_dir = args.backup if hasattr(args, 'backup') and args.backup else None
+        print_summary_table(all_rows, backup_dir, hv_loaded)

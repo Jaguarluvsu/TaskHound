@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--json", help="Write all results to a JSON file")
     out.add_argument("--csv", help="Write all results to a CSV file")
     out.add_argument("--backup", help="Directory to save raw XML task files (per target)")
+    out.add_argument("--summary", action="store_true", help="Display summary table at the end of the run")
 
     # Misc
     misc = ap.add_argument_group('Misc')
