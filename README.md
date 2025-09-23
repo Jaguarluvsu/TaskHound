@@ -1,39 +1,34 @@
 # TaskHound
 
-Windows Privileged Scheduled Task Disovery Tool for fun and profit.
+**Windows Privileged Scheduled Task Discovery Tool** for fun and profit.
 
+TaskHound hunts for Windows scheduled tasks that run with privileged accounts and stored credentials. It enumerates tasks over SMB, parses XML configurations, and identifies high-value attack opportunities through BloodHound export support.
 
-TaskHound enumerates Windows System Scheduled Tasks over SMB (C:\Windows\System32\Tasks), parses Task XMLs, and attempts to identify tasks that run in the context of privileged accounts (and ideally stored credentials). It supports BloodHound Legacy high-value mappings by accepting a CSV/JSON export containing high-value users and SIDs.
+## Key Features
 
-## Disclaimer
+- **Tier 0 Detection**: Automatically tries to identifiy tasks running as Domain Admins, Enterprise Admins, and other Tier 0 accounts.
+- **BloodHound Integration**: Supports CSV/JSON exports with group membership analysis
+- **Offline Analysis**: Process previously collected XML files
+- **BOF**: BOF implementation for AdaptixC2 (see [BOF/README.md](BOF/README.md))
 
-TaskHound is strictly an audit and educational tool. Use only in environments you own or where you have explicit authorization to test. Seriously. Don't be a jerk.
-
-## EXPERIMENTAL Features
-
-Every feature or add-on listed here with an **EXPERIMENTAL** Tag is to be considered **UNSAFE** for prod environments. I have done limited testing in my lab. Don't blame me if the BOF for example messes up your op or gets you busted. You have been warned.
-
-## OPSEC considerations
-
-The Python version TaskHound relies heavily on impacket for SMB/RPC and Kerberos Shenanigans. The typical IOCs apply.
-If you really care about OPSEC: Use the BOF or collect manually. If you replicate the target folder structure, the `--offline` parameter can still be used.
-
-## Quick start
-
-Install dependencies:
+## Quick Start
 
 ```bash
+# Install
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install .
+
+# Basic usage
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'TARGET_HOST'
+
+# With BloodHound data support
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'TARGET_HOST' --bh-data bloodhound_export.json
 ```
 
-## Usage
+## Demo Output
 
-```bash
-taskhound -h
-```
 ```
 TTTTT  AAA   SSS  K   K H   H  OOO  U   U N   N DDDD
   T   A   A S     K  K  H   H O   O U   U NN  N D   D
@@ -41,239 +36,229 @@ TTTTT  AAA   SSS  K   K H   H  OOO  U   U N   N DDDD
   T   A   A     S K  K  H   H O   O U   U N  NN D   D
   T   A   A SSSS  K   K H   H  OOO   UUU  N   N DDDD
 
-                    by 0xr0BIT
+                     by 0xr0BIT
 
-usage: taskhound [-h] [-u USERNAME] [-p PASSWORD] [-d DOMAIN] [--hashes HASHES] [-k] [-t TARGET] [--targets-file TARGETS_FILE] [--dc-ip DC_IP]
-                 [--offline OFFLINE] [--bh-data BH_DATA] [--include-ms] [--unsaved-creds] [--credguard-detect] [--plain PLAIN] [--json JSON] [--csv CSV] [--backup BACKUP] [--debug]
+[+] High Value target data loaded
+[+] moe.thesimpsons.local: Connected via SMB
+[+] moe.thesimpsons.local: Local Admin Access confirmed
+[*] moe.thesimpsons.local: Crawling Scheduled Tasks (skipping \Microsoft for speed)
+[+] moe.thesimpsons.local: Found 7 tasks, privileged 2
 
-TaskHound - Scheduled Task privilege checker with optional High Value enrichment
+[TIER-0] Windows\System32\Tasks\BackupTask
+        RunAs  : THESIMPSONS\Administrator
+        What   : C:\Scripts\backup.exe --daily
+        Author : THESIMPSONS\Administrator  
+        Date   : 2025-09-18T23:04:37.3089851
+        Reason : Tier 0 group membership: Domain Admins, Administrators, Enterprise Admins
+        Next Step: DPAPI Dump / Task Manipulation
 
-options:
-  -h, --help            show this help message and exit
+[PRIV] Windows\System32\Tasks\MaintenanceTask
+        RunAs  : THESIMPSONS\marge.simpson
+        What   : C:\Tools\cleanup.exe
+        Author : THESIMPSONS\Administrator
+        Date   : 2025-09-18T23:05:43.0854575
+        Reason : High Value match found
+        Next Step: DPAPI Dump / Task Manipulation
 
-Authentication options:
-  -u, --username USERNAME
-                        Username (required for online mode)
-  -p, --password PASSWORD
-                        Password (omit with -k if using Kerberos/ccache)
-  -d, --domain DOMAIN   Domain (required for online mode)
-  --hashes HASHES       NTLM hashes in LM:NT format (or NT-only 32-hex) to use instead of password
-  -k, --kerberos        Use Kerberos authentication (supports ccache)
+[TASK] Windows\System32\Tasks\UserTask
+        RunAs  : THESIMPSONS\bart.simpson
+        What   : C:\Windows\System32\notepad.exe
+        Author : THESIMPSONS\bart.simpson
+        Date   : 2025-09-18T12:30:15.1234567
 
-Target options:
-  -t, --target TARGET   Single target
-  --targets-file TARGETS_FILE
-                        File with targets, one per line
-  --dc-ip DC_IP         Domain controller IP (required when using Kerberos without DNS)
-
-Scanning options:
-  --offline OFFLINE     Offline mode: parse previously collected XML files from directory (no authentication required)
-  --bh-data BH_DATA     Path to High Value Target export (csv/json from Neo4j)
-  --include-ms          Also include \Microsoft scheduled tasks (WARNING: very slow)
-  --unsaved-creds       Show scheduled tasks that do not store credentials (unsaved credentials)
-  --credguard-detect    EXPERIMENTAL: Attempt to detect Credential Guard status via remote registry (default: off). Only use if you know your environment supports it.
-
-Output options:
-  --plain PLAIN         Directory to save normal text output (per target)
-  --json JSON           Write all results to a JSON file
-  --csv CSV             Write all results to a CSV file
-  --backup BACKUP       Directory to save raw XML task files (per target)
-
-Misc:
-  --debug               Enable debug output (print full stack traces)
+================================================================================
+SUMMARY
+================================================================================
+HOSTNAME                | TIER-0_TASKS | PRIVILEGED_TASKS | NORMAL_TASKS
+------------------------------------------------------------------------
+moe.thesimpsons.local   | 1            | 1                | 5           
+================================================================================
+[+] Check the output above or your saved files for detailed task information
 ```
 
-Basic scan with password:
+## Usage
 
+### Authentication Methods
+
+#### Password Authentication
 ```bash
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.springfield.local' -t 'HOSTNAME/IP' --dc-ip IP
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local'
 ```
 
-Using NTLM hashes (either LM:NT or NT-only hex):
-
+#### NTLM Hashes
 ```bash
-taskhound -u 'homer.simpson' --hashes ':252facd066d93dd009d4fd2cd0868384' -d 'thesimpsons.springfield.local' -t 'HOSTNAME/IP'
+taskhound -u 'homer.simpson' --hashes ':252facd066d93dd009d4fd2cd0868384' -d 'thesimpsons.local' -t 'moe.thesimpsons.local'
 ```
 
-Kerberos with ccache (export KRB5CCNAME):
-
+#### Kerberos (ccache or password)
 ```bash
+# Keep in mind to use Hostnames/FQDNs rather than IPs when using Kerberos authentication to avoid NTLM fallback!
 export KRB5CCNAME=./homer.simpson.ccache
-taskhound -u 'homer.simpson' -k -d 'thesimpsons.springfield.local' -t 'HOSTNAME' --dc-ip IP
+taskhound -u 'homer.simpson' -k -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --dc-ip '192.168.1.10'
 ```
 
-Show tasks that have no saved credentials (Useful in some cases, disabled by default):
-
+### Multiple Targets
 ```bash
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.springfield.local' --unsaved-creds -t 'HOSTNAME'
+# File with one target per line
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' --targets-file targets.txt --bh-data bloodhound_export.json
 ```
 
-Save raw XML task files for offline analysis:
-
+### BloodHound Integration
 ```bash
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.springfield.local' -t 'HOSTNAME' --backup ./backups
+# Basic high-value detection
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --bh-data bloodhound_export.json
 ```
 
-Analyze previously collected XML files (offline mode):
-
+### Offline Analysis
 ```bash
-taskhound --offline ./backups --bh-data /path/to/bloodhound_export.json
+# Analyze previously collected XML files
+taskhound --offline /path/to/collected/tasks --bh-data bloodhound_export.json
+
+# Backup raw XMLs during collection for later analysis
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --backup ./task_backups
 ```
 
-**Note:** The offline mode expects a directory structure where each subdirectory represents a host, and XML files are organized in a path similar to their original location (e.g., `backups/hostname/Windows/System32/Tasks/TaskName`). This structure is automatically created when using the `--backup` option during online collection.
+### Export Options
+```bash
+# Save results to CSV
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --csv results.csv
 
-## Demo Output
+# Save to JSON
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --json results.json
 
-Console Output / Plain file:
-
-```
-[+] HOSTNAME: Connected via SMB
-[+] HOSTNAME: Local Admin Access confirmed
-[*] HOSTNAME: Crawling Scheduled Tasks (skipping \Microsoft for speed)
-[+] HOSTNAME: Found 5 tasks, privileged 4
-----------------------
-[TASK] Windows\System32\Tasks\HIGH_PRIV
-       RunAs  : THESIMPSONS\homer.simpson
-       What   : C:\Windows\System32\cmd.exe /c whoami
-       Author : THESIMPSONS\ned.flanders
-       Date   : 2025-09-16T14:12:44.7939771
-       Reason : High Value Match
-----------------------
+# Disable summary table (shown by default)
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --no-summary
 ```
 
-## High-Value Detection
+### Advanced Scanning Options
+```bash
+# Include Microsoft tasks (WARNING: slow)
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --include-ms
 
-TaskHound accepts a CSV or JSON file (extension matters: `.csv` or `.json`) for the `--bh-data` option. The file must contain the following attributes (case-insensitive header names accepted):
+# Show tasks without stored credentials
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --unsaved-creds
 
-- `SamAccountName`
-- `SID`
-
-You can use this query to generate the data:
-
+# EXPERIMENTAL: Credential Guard detection
+taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --credguard-detect
 ```
+
+## BloodHound Integration
+
+### Tier 0 Detection
+TaskHound automatically detects default Tier 0 accounts based on group memberships:
+- **Schema Admins**
+- **Enterprise Admins** 
+- **Domain Admins**
+- **Administrators**
+- **etc...**
+
+### Data Export from BloodHound
+
+TaskHound accepts CSV or JSON files with the following required fields:
+- `SamAccountName` (required)  
+- `sid` (required)
+- `groups` or `group_names` (optional, for Tier 0 detection)
+
+#### Basic High-Value Users Query
+```cypher
 MATCH (u:User {highvalue:true})
-RETURN u.samaccountname AS SamAccountName, u.objectid as SID
+RETURN u.samaccountname AS SamAccountName, u.objectid as sid
 ORDER BY u.samaccountname
 ```
 
-If you want to have more high value targets than the default ones: Use custom queries. An example to mark everything as high value that has the keyword ADMIN in it:
+#### Enhanced Query with Group Memberships (Recommended)
+```cypher
+MATCH (u:User {highvalue:true})
+OPTIONAL MATCH (u)-[:MemberOf*1..]->(g:Group)
+WITH u, collect(g.name) as groups, collect(g.objectid) as group_sids
+RETURN u.samaccountname AS SamAccountName, u.objectid as sid,
+       groups as group_names, group_sids as groups
+ORDER BY u.samaccountname
 ```
+
+#### Quick High-Value Marking (Warning: can be heavy and cause False Positives)
+```cypher
+// Mark all accounts with "ADMIN" in the name as high-value
 MATCH (n) WHERE toUpper(n.name) CONTAINS "ADMIN"
-OR toUpper(n.azname) CONTAINS "ADMIN"
-OR toUpper(n.objectid) CONTAINS "ADMIN" 
-SET n.highvalue = true, n.highvaluereason = 'Node matched ADMIN keyword' 
+OR toUpper(n.azname) CONTAINS "ADMIN"  
+OR toUpper(n.objectid) CONTAINS "ADMIN"
+SET n.highvalue = true, n.highvaluereason = 'Node matched ADMIN keyword'
 RETURN n
 ```
 
-## **EXPERIMENTAL** Credential Guard Detection
+## EXPERIMENTAL Features
 
-If enabled (--credguard-detect), TaskHound checks the remote registry for Credential Guard status (HKLM\SYSTEM\CurrentControlSet\Control\Lsa\LsaCfgFlags or IsolatedUserMode). If enabled, the output for each host/task will include:
+> **EXPERIMENTAL WARNING**  
+> Features tagged as **EXPERIMENTAL** are **UNSAFE** for production environments. Limited testing has been done in lab environments. Don't blame me if something blows up your op or gets you busted. You have been warned.
 
-    "credential_guard": true
+### **EXPERIMENTAL** Credential Guard Detection
 
-If not enabled or undetectable, the field will be false or null.
+Checks remote registry for Credential Guard status to determine DPAPI dump feasibility. Results include `"credential_guard": true/false` in output.
 
-This helps to determine if DPAPI dumps (aside of user vaults) are feasible on a given host. This feature is still experimental for the time being and may not be reliable on all Windows versions or VM environments.
+### **EXPERIMENTAL** BOF Implementation
+See [BOF/README.md](BOF/README.md) for Beacon Object File implementation supporting AdaptixC2 and similar C2 frameworks.
 
-## **EXPERIMENTAL** BOF Implementation
-
-TaskHound includes a **Beacon Object File (BOF)** implementation of the **core collection functionality** for **AdaptixC2**. I'm sure it can be translated to work with other C2 frameworks but this is left as an exercise for the reader.
-
-**Note**: The BOF is designed for initial data collection on a single host. For comprehensive analysis with high-value detection use the collected XML files with the main Python tool's `--offline` mode.
-
-### Compilation
-
-#### Quick Compilation
-```bash
-cd BOF/
-./compile.sh
-```
-
-#### Manual Compilation
-Requirements: **MinGW-w64** cross-compiler for Windows PE object files
-
-```bash
-# Install MinGW-w64 (macOS example)
-brew install mingw-w64
-
-# Compile manually
-cd BOF/AdaptixC2/
-x86_64-w64-mingw32-gcc -c taskhound.c -o taskhound.o \
-  -fno-stack-check -fno-stack-protector -mno-stack-arg-probe \
-  -fno-asynchronous-unwind-tables -fno-builtin -Os
-```
-
-### Usage
-
-#### Basic Commands
-```bash
-# Current user context (uses beacon's authentication)
-# Note: If using the current logon session, always prefer HOSTNAME over IP to avoid NTLM fallback!
-beacon > taskhound HOSTNAME/IP
-
-# With explicit credentials  
-beacon > taskhound HOSTNAME/IP thesimpsons\homer.simpson P@ssw0rd
-
-# With credential saving for offline analysis
-beacon > taskhound HOSTNAME/IP -save C:\temp\task_collection
-
-# Show all tasks including those without stored credentials
-beacon > taskhound HOSTNAME/IP -unsaved-creds
-```
-
-### Output
-```
-beacon > taskhound DC highpriv P@ssw0rd1337. -save C:\Temp\test
-
-[22/09 23:14:01] [*] Task: execute BOF
-[22/09 23:14:01] [*] Agent called server, sent [9.81 Kb]
-[+] TaskHound - Remote Task Collection
-[+] Target: DC
-[+] Using credentials: highpriv
-[+] Saved: C:\Temp\test\DC\Windows\System32\Tasks\Test1
-Test1: THESIMPSONS\Administrator is executing C:\Windows\System32\AcXtrnal.dll 1234 [STORED CREDS]
-[+] Saved: C:\Temp\test\DC\Windows\System32\Tasks\Test2
-Test2: THESIMPSONS\lowpriv is executing C:\Windows\System32\AboveLockAppHost.dll 123432 [STORED CREDS]
-[+] Collection complete. Found 2 tasks
-[22/09 23:14:01] [+] BOF finished
-```
-
-#### Directory Structure
-
-When using `-save`, creates Python TaskHound compatible structure:
+## Full Usage Reference
 
 ```
-save_directory/
-└── hostname/
-    └── Windows/
-        └── System32/
-            └── Tasks/
-                ├── Test1
-                ├── Test2
+usage: taskhound [-h] [-u USERNAME] [-p PASSWORD] [-d DOMAIN] [--hashes HASHES] 
+                 [-k] [-t TARGET] [--targets-file TARGETS_FILE] [--dc-ip DC_IP]
+                 [--offline OFFLINE] [--bh-data BH_DATA] [--include-ms] 
+                 [--unsaved-creds] [--credguard-detect] [--plain PLAIN] 
+                 [--json JSON] [--csv CSV] [--backup BACKUP] [--no-summary] 
+                 [--debug]
+
+Authentication:
+  -u, --username        Username (required for online mode)
+  -p, --password        Password (omit with -k for Kerberos/ccache)  
+  -d, --domain          Domain (required for online mode)
+  --hashes HASHES       NTLM hashes (LM:NT or NT-only format)
+  -k, --kerberos        Use Kerberos authentication (supports ccache)
+
+Targets:
+  -t, --target          Single target hostname/IP
+  --targets-file        File with targets, one per line
+  --dc-ip               Domain controller IP (required for Kerberos without DNS)
+
+Scanning:
+  --offline OFFLINE     Parse previously collected XML files from directory
+  --bh-data BH_DATA     BloodHound export file (CSV/JSON) for high-value detection
+  --include-ms          Include \Microsoft tasks (WARNING: very slow)
+  --unsaved-creds       Show tasks without stored credentials
+  --credguard-detect    EXPERIMENTAL: Detect Credential Guard via remote registry
+
+Output:
+  --plain PLAIN         Save plain text output per target
+  --json JSON           Export results to JSON file  
+  --csv CSV             Export results to CSV file
+  --backup BACKUP       Save raw XML files for offline analysis
+  --no-summary          Disable summary table (shown by default)
+  --debug               Enable debug output and full stack traces
 ```
 
-#### Offline Analysis Integration
+## OPSEC Considerations
 
-BOF-collected files work seamlessly with Python TaskHound:
-
-```bash
-# After BOF collection with -save (and transfer to your host)
-taskhound --offline /path/to/Tasks/ --bh-data /path/to/bloodhound_export.json
-```
-
-## Legal / License
-
-Use responsibly. The author(s) provide no warranty. See `LICENSE` for details.
+TaskHound relies heavily on impacket for SMB/RPC/Kerberos operations. Standard impacket IOCs apply.
+**For better OPSEC**: Use the BOF implementation or collect tasks manually, then analyze offline.
 
 ## Roadmap
 
-There are quite a few things that I want to add / refine when I get the time to do so.
+When caffeine intake and free time align:
+- Support custom Tier-0 mappings instead of just the default ones
+- Support for more languages via custom mapping logic
+- True BloodHound Community Edition export compatibility
+- OpenGraph integration for attack path mapping  
+- Dedicated NetExec module
+- Automated credential blob extraction for offline decryption
 
-- Compatibility with BloodHound Community Edition Exports
-- NetExec Module
-- OpenGraph Integration for Attack Path Mapping
-- Automatically grabbing the corresponding Cred Blobs from Disk to decrypt them offline, given you acquired the key somehow
+## Disclaimer
+
+TaskHound is strictly an **audit and educational tool**. Use only in environments you own or where you have explicit authorization to test. Seriously. Don't be a jerk.
 
 ## Contributing
 
-PRs welcome. Don't expext wonders tho (fr). Half of this was caffeine induced vibe-coding.
+PRs welcome. Don't expect wonders though - half of this was caffeine-induced vibe-coding.
+
+## License
+
+Use responsibly. No warranty provided. See `LICENSE` for details.

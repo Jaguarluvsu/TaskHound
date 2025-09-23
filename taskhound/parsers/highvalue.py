@@ -14,6 +14,26 @@ import json
 from typing import Dict, Any, Iterable
 from ..utils.logging import warn
 
+# Tier 0 group names (both English and German)
+TIER0_GROUPS = [
+    # Schema Admins
+    "Schema Admins", "Schema-Admins",
+    # Enterprise Admins  
+    "Enterprise Admins", "Unternehmens-Admins",
+    # Domain Admins
+    "Domain Admins", "Domänen-Admins",
+    # Administrators (local)
+    "Administrators", "Administratoren",
+    # Backup Operators
+    "Backup Operators", "Sicherungsoperatoren",
+    # Server Operators
+    "Server Operators", "Server-Operatoren",
+    # Account Operators
+    "Account Operators", "Konto-Operatoren",
+    # Print Operators
+    "Print Operators", "Druck-Operatoren",
+]
+
 
 class HighValueLoader:
     # Load and query a high-value users export (CSV or JSON).
@@ -65,9 +85,13 @@ class HighValueLoader:
         # Print a small help if the schema is wrong
         print("[!] Invalid schema in custom HV file!")
         print("    Expected fields: SamAccountName, sid")
+        print("    Optional fields: groups, group_names")
         print("    Please generate with this Neo4j query:")
         print("MATCH (u:User {highvalue:true})")
-        print("RETURN u.samaccountname AS SamAccountName, u.objectid as sid")
+        print("OPTIONAL MATCH (u)-[:MemberOf*1..]->(g:Group)")
+        print("WITH u, collect(g.name) as groups, collect(g.objectid) as group_sids")
+        print("RETURN u.samaccountname AS SamAccountName, u.objectid as sid,")
+        print("       groups as group_names, group_sids as groups")
         print("ORDER BY u.samaccountname")
 
     def _load_json(self) -> bool:
@@ -87,8 +111,46 @@ class HighValueLoader:
             else:
                 sam = sam_raw
             sid = (row.get("sid") or "").strip()
-            self.hv_users[sam] = {"sid": sid}
-            self.hv_sids[sid] = {"sam": sam}
+            
+            # Extract group information
+            groups = []
+            group_names = []
+            
+            # Handle group_names field (array of strings)
+            if "group_names" in row and row["group_names"]:
+                if isinstance(row["group_names"], list):
+                    group_names = [str(g).strip() for g in row["group_names"] if g]
+                else:
+                    # Handle single string case
+                    group_names = [str(row["group_names"]).strip()]
+            
+            # Handle groups field - can be either SIDs or names
+            if "groups" in row and row["groups"]:
+                if isinstance(row["groups"], list):
+                    groups_raw = [str(g).strip() for g in row["groups"] if g]
+                    # If groups contains names (not SIDs), use them as group names
+                    if groups_raw and not groups_raw[0].startswith('S-1-5-'):
+                        group_names.extend(groups_raw)
+                    else:
+                        groups = groups_raw
+                else:
+                    # Handle single string case
+                    groups_str = str(row["groups"]).strip()
+                    if groups_str.startswith('S-1-5-'):
+                        groups = [groups_str]
+                    else:
+                        group_names.append(groups_str)
+            
+            self.hv_users[sam] = {
+                "sid": sid,
+                "groups": groups,
+                "group_names": group_names
+            }
+            self.hv_sids[sid] = {
+                "sam": sam,
+                "groups": groups,
+                "group_names": group_names
+            }
         return True
 
     def _load_csv(self) -> bool:
@@ -105,8 +167,45 @@ class HighValueLoader:
                 else:
                     sam = raw_sam
                 sid = (row.get("sid") or "").strip().strip('"')
-                self.hv_users[sam] = {"sid": sid}
-                self.hv_sids[sid] = {"sam": sam}
+                
+                # Extract group information
+                groups = []
+                group_names = []
+                
+                # Handle group_names field 
+                if "group_names" in row and row["group_names"]:
+                    group_names_raw = row["group_names"].strip().strip('"')
+                    if group_names_raw.startswith('[') and group_names_raw.endswith(']'):
+                        # JSON array format
+                        try:
+                            group_names = json.loads(group_names_raw)
+                        except:
+                            group_names = [group_names_raw.strip('[]').strip('"')]
+                    else:
+                        group_names = [group_names_raw]
+                
+                # Handle groups field (SIDs)
+                if "groups" in row and row["groups"]:
+                    groups_raw = row["groups"].strip().strip('"')
+                    if groups_raw.startswith('[') and groups_raw.endswith(']'):
+                        # JSON array format
+                        try:
+                            groups = json.loads(groups_raw)
+                        except:
+                            groups = [groups_raw.strip('[]').strip('"')]
+                    else:
+                        groups = [groups_raw]
+                
+                self.hv_users[sam] = {
+                    "sid": sid,
+                    "groups": groups,
+                    "group_names": group_names
+                }
+                self.hv_sids[sid] = {
+                    "sam": sam,
+                    "groups": groups,
+                    "group_names": group_names
+                }
         return True
 
     def check_highvalue(self, runas: str) -> bool:
@@ -125,3 +224,37 @@ class HighValueLoader:
         else:
             sam = val.lower()
         return sam in self.hv_users
+
+    def check_tier0(self, runas: str) -> tuple[bool, list[str]]:
+        # Return (True, matching_groups) if the given RunAs value belongs to Tier 0 groups.
+        #
+        # Accepts SIDs (S-1-5-...) or NETBIOS\sam or plain sam.
+        if not runas:
+            return False, []
+        
+        val = runas.strip()
+        user_data = None
+        
+        # SID form
+        if val.upper().startswith("S-1-5-"):
+            user_data = self.hv_sids.get(val)
+        else:
+            # NETBIOS\sam or just sam
+            if "\\" in val:
+                sam = val.split("\\", 1)[1].lower()
+            else:
+                sam = val.lower()
+            user_data = self.hv_users.get(sam)
+        
+        if not user_data:
+            return False, []
+        
+        # Check group memberships
+        group_names = user_data.get("group_names", [])
+        matching_groups = []
+        
+        for group_name in group_names:
+            if group_name in TIER0_GROUPS:
+                matching_groups.append(group_name)
+        
+        return len(matching_groups) > 0, matching_groups

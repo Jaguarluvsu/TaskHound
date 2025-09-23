@@ -19,6 +19,9 @@ venv/
 # Example outputs
 examples/out/
 
+# Test data and outputs
+tests/
+
 # macOS
 .DS_Store
 

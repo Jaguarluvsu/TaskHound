@@ -82,7 +82,7 @@ def main():
     if args.csv:
         write_csv(args.csv, all_rows)
 
-    # Print summary if requested
-    if args.summary:
+    # Print summary by default (unless disabled)
+    if not args.no_summary:
         backup_dir = args.backup if hasattr(args, 'backup') and args.backup else None
         print_summary_table(all_rows, backup_dir, hv_loaded)
