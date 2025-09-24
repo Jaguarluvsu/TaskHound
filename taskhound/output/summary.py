@@ -2,9 +2,7 @@ from typing import List, Dict
 from ..utils.logging import good
 
 def print_summary_table(all_rows: List[Dict], backup_dir: str = None, has_hv_data: bool = False):
-    """
-    Print a nicely formatted summary table showing task counts per host
-    """
+    # Print a nicely formatted summary table showing task counts per host
     if not all_rows:
         return
     

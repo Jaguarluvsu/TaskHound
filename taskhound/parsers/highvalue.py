@@ -11,8 +11,65 @@
 import os
 import csv
 import json
-from typing import Dict, Any, Iterable
+from datetime import datetime, timezone
+from typing import Dict, Any, Iterable, Optional, Tuple
 from ..utils.logging import warn
+
+
+def _convert_timestamp(timestamp_value) -> Optional[datetime]:
+    # Convert various timestamp formats to datetime.
+    # Supports Windows FILETIME, Unix timestamps, and string representations.
+    # Returns None if conversion fails or timestamp is 0/invalid.
+    if not timestamp_value or timestamp_value == "0" or timestamp_value == 0:
+        return None
+    
+    try:
+        # Handle different input types
+        if isinstance(timestamp_value, str):
+            if timestamp_value.strip() == "":
+                return None
+            timestamp = float(timestamp_value)
+        else:
+            timestamp = float(timestamp_value)
+            
+        if timestamp == 0:
+            return None
+        
+        # Detect format based on magnitude
+        # Windows FILETIME is very large (> 100 billion for dates after 1970)
+        # Unix timestamp is smaller (< 10 billion for dates before 2286)
+        if timestamp > 10000000000:  # Likely Windows FILETIME
+            # Windows FILETIME epoch: January 1, 1601 00:00:00 UTC
+            # Convert 100-nanosecond intervals to seconds
+            unix_timestamp = (timestamp - 116444736000000000) / 10000000.0
+            return datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+        else:  # Likely Unix timestamp
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            
+    except (ValueError, OSError, OverflowError):
+        return None
+
+
+def _analyze_password_freshness(task_date: Optional[str], pwd_change_date: Optional[datetime]) -> Tuple[str, str]:
+    # Simple boolean password analysis relative to task creation date.
+    # Returns (risk_level, explanation) tuple.
+    if not task_date or not pwd_change_date:
+        return "UNKNOWN", "Insufficient date information for password analysis"
+    
+    try:
+        # Parse task date (format: 2025-09-18T23:04:37.3089851)
+        task_dt = datetime.fromisoformat(task_date.replace('Z', '+00:00'))
+        if task_dt.tzinfo is None:
+            task_dt = task_dt.replace(tzinfo=timezone.utc)
+        
+        # Simple boolean check
+        if task_dt < pwd_change_date:
+            return "BAD", "Password changed AFTER task creation - stored password likely invalid"
+        else:
+            return "GOOD", "Password changed BEFORE task creation - stored password likely valid"
+    except (ValueError, TypeError) as e:
+        return "UNKNOWN", f"Date parsing error: {e}"
+
 
 # Tier 0 group names (both English and German)
 TIER0_GROUPS = [
@@ -74,25 +131,263 @@ class HighValueLoader:
         # Return True if headers contain the required fields.
         #
         # Header names are checked case-insensitively.
+        # Supports both traditional format and new "all_props" lazy query format.
         if not headers:
             return False
         lower = {h.strip().lower() for h in headers}
-        need = {"samaccountname", "sid"}
-        return need.issubset(lower)
+        
+        # Traditional format: SamAccountName + (sid OR objectid)
+        traditional_format = {"samaccountname"}.issubset(lower) and (
+            {"sid"}.issubset(lower) or {"objectid"}.issubset(lower)
+        )
+        
+        # New lazy query format: SamAccountName + all_props
+        new_format = {"samaccountname", "all_props"}.issubset(lower)
+        
+        return traditional_format or new_format
 
     @staticmethod
     def _schema_help():
         # Print a small help if the schema is wrong
         print("[!] Invalid schema in custom HV file!")
-        print("    Expected fields: SamAccountName, sid")
-        print("    Optional fields: groups, group_names")
-        print("    Please generate with this Neo4j query:")
+        print("    Required fields: SamAccountName + (sid OR objectid OR all_props)")
+        print("    Optional fields: groups, group_names, pwdlastset, lastlogon")
+        print("    Additional fields: Any BloodHound attribute will be preserved")
+        print("    Please generate with one of these Neo4j queries:")
+        print()
+        print("## Basic Query:")
+        print("MATCH (u:User {highvalue:true})")
+        print("RETURN u.samaccountname AS SamAccountName, u.objectid as sid")
+        print("ORDER BY u.samaccountname")
+        print()
+        print("## Enhanced Query (Recommended):")
         print("MATCH (u:User {highvalue:true})")
         print("OPTIONAL MATCH (u)-[:MemberOf*1..]->(g:Group)")
         print("WITH u, collect(g.name) as groups, collect(g.objectid) as group_sids")
         print("RETURN u.samaccountname AS SamAccountName, u.objectid as sid,")
-        print("       groups as group_names, group_sids as groups")
+        print("       groups as group_names, group_sids as groups,")
+        print("       u.pwdlastset as pwdlastset, u.lastlogon as lastlogon")
         print("ORDER BY u.samaccountname")
+        print()
+        print("## Lazy Query (All Attributes):")
+        print("MATCH (u:User {highvalue:true})")
+        print("OPTIONAL MATCH (u)-[:MemberOf*1..]->(g:Group)")
+        print("WITH u, properties(u) as all_props, collect(g.name) as groups, collect(g.objectid) as group_sids")
+        print("RETURN u.samaccountname AS SamAccountName, all_props, groups, group_sids")
+        print("ORDER BY SamAccountName")
+
+    def _process_user_data(self, row: Dict[str, Any]) -> bool:
+        # Process a single user record from JSON or CSV data.
+        # Extracts required fields and preserves all BloodHound attributes.
+        # Supports both traditional format and new "all_props" lazy query format.
+        
+        # Check if this is the new "all_props" format
+        if "all_props" in row:
+            return self._process_all_props_format(row)
+        else:
+            return self._process_traditional_format(row)
+    
+    def _process_all_props_format(self, row: Dict[str, Any]) -> bool:
+        # Process the new lazy query format with "all_props" object
+        # Returns False for invalid records (which will be skipped)
+        sam_raw = (row.get("SamAccountName") or "").strip().strip('"').lower()
+        all_props_raw = row.get("all_props", {})
+        
+        if not sam_raw or not all_props_raw:
+            return False
+        
+        # Handle all_props as string (CSV) or dict (JSON)
+        if isinstance(all_props_raw, str):
+            # Parse string representation of dict from CSV (best effort)
+            all_props_str = all_props_raw.strip().strip('"')
+            all_props = {}
+            
+            try:
+                # Use regex patterns to extract key information from the string
+                import re
+                
+                # Extract objectid (SID) - this is critical
+                objectid_match = re.search(r'objectid[:\s]*["\']?([S-1-5-][^"\'}\s,]+)', all_props_str)
+                if objectid_match:
+                    all_props["objectid"] = objectid_match.group(1)
+                    
+                # Extract pwdlastset timestamp
+                pwd_match = re.search(r'pwdlastset[:\s]*([0-9.]+)', all_props_str)
+                if pwd_match:
+                    all_props["pwdlastset"] = float(pwd_match.group(1))
+                    
+                # Extract lastlogon timestamp  
+                logon_match = re.search(r'lastlogon[:\s]*([0-9.]+)', all_props_str)
+                if logon_match:
+                    all_props["lastlogon"] = float(logon_match.group(1))
+                    
+                # Extract common boolean fields
+                for field in ["highvalue", "enabled", "admincount", "sensitive", "pwdneverexpires"]:
+                    field_match = re.search(rf'{field}[:\s]*(\w+)', all_props_str)
+                    if field_match:
+                        value_str = field_match.group(1).lower()
+                        all_props[field] = value_str in ("true", "yes", "1")
+                        
+                # Extract string fields (name, domain, description, etc.)
+                for field in ["name", "domain", "description", "distinguishedname", "samaccountname"]:
+                    field_match = re.search(rf'{field}[:\s]*["\']([^"\']+)["\']', all_props_str)
+                    if field_match:
+                        all_props[field] = field_match.group(1)
+                        
+                # If we couldn't extract objectid, this record is invalid
+                if "objectid" not in all_props:
+                    return False
+                    
+            except Exception:
+                # If regex parsing fails completely, skip this record
+                return False
+        else:
+            all_props = all_props_raw
+            
+        # Extract SID from all_props
+        sid_raw = (all_props.get("objectid") or "").strip().strip('"')
+        if not sid_raw:
+            return False
+            
+        # Normalize sam (handle DOMAIN\user format)
+        if "\\" in sam_raw:
+            sam = sam_raw.split("\\", 1)[1]
+        else:
+            sam = sam_raw
+            
+        sid = sid_raw.upper()
+        
+        # Process group information from the separate fields
+        groups = []
+        group_names = []
+        
+        # Handle groups array (group names)
+        groups_data = row.get("groups")
+        if groups_data:
+            if isinstance(groups_data, list):
+                group_names = [str(g).strip() for g in groups_data if g]
+            elif isinstance(groups_data, str):
+                # Handle JSON array format in CSV
+                groups_str = groups_data.strip().strip('"')
+                if groups_str.startswith('[') and groups_str.endswith(']'):
+                    try:
+                        parsed = json.loads(groups_str)
+                        if isinstance(parsed, list):
+                            group_names = [str(x) for x in parsed]
+                    except:
+                        group_names = [groups_str.strip('[]')]
+                        
+        # Handle group_sids array
+        group_sids_data = row.get("group_sids")
+        if group_sids_data:
+            if isinstance(group_sids_data, list):
+                groups = [str(g).strip() for g in group_sids_data if g]
+            elif isinstance(group_sids_data, str):
+                # Handle JSON array format in CSV
+                sids_str = group_sids_data.strip().strip('"')
+                if sids_str.startswith('[') and sids_str.endswith(']'):
+                    try:
+                        parsed = json.loads(sids_str)
+                        if isinstance(parsed, list):
+                            groups = [str(x) for x in parsed]
+                    except:
+                        groups = [sids_str.strip('[]')]
+        
+        # Create user data starting with all_props and add our additional fields
+        user_data = dict(all_props)  # Copy all BloodHound properties
+        user_data.update({
+            "sid": sid,
+            "groups": groups,
+            "group_names": group_names,
+            "pwdlastset": _convert_timestamp(all_props.get("pwdlastset")),
+            "lastlogon": _convert_timestamp(all_props.get("lastlogon"))
+        })
+        
+        self.hv_users[sam] = user_data
+        # Create SID lookup with sam field added
+        self.hv_sids[sid] = dict(user_data)
+        self.hv_sids[sid]["sam"] = sam
+        return True
+        
+    def _process_traditional_format(self, row: Dict[str, Any]) -> bool:
+        # Process traditional format (existing logic)
+        
+        # Extract required fields with fallback names
+        sam_raw = (row.get("SamAccountName") or row.get("samaccountname") or "").strip().strip('"').lower()
+        sid_raw = (row.get("sid") or row.get("objectid") or "").strip().strip('"')
+        
+        if not sam_raw or not sid_raw:
+            return False
+        
+        # Normalize sam (handle DOMAIN\user format)
+        if "\\" in sam_raw:
+            sam = sam_raw.split("\\", 1)[1]
+        else:
+            sam = sam_raw
+        
+        sid = sid_raw.upper()
+        
+        # Process group information
+        groups = []
+        group_names = []
+        
+        # Handle group_names field (preferred for human-readable names)
+        group_names_data = row.get("group_names") or row.get("groups")
+        if group_names_data:
+            if isinstance(group_names_data, list):
+                potential_names = [str(g).strip() for g in group_names_data if g]
+                # If it looks like SIDs, treat as groups; otherwise as group names
+                if potential_names and potential_names[0].startswith('S-1-5-'):
+                    groups = potential_names
+                else:
+                    group_names = potential_names
+            elif isinstance(group_names_data, str):
+                data_str = group_names_data.strip().strip('"')
+                # Handle JSON array format in CSV
+                if data_str.startswith('[') and data_str.endswith(']'):
+                    try:
+                        parsed = json.loads(data_str)
+                        if isinstance(parsed, list):
+                            if parsed and str(parsed[0]).startswith('S-1-5-'):
+                                groups = [str(x) for x in parsed]
+                            else:
+                                group_names = [str(x) for x in parsed]
+                    except:
+                        # Fallback to single item
+                        if data_str.startswith('S-1-5-'):
+                            groups = [data_str.strip('[]')]
+                        else:
+                            group_names = [data_str.strip('[]')]
+                else:
+                    if data_str.startswith('S-1-5-'):
+                        groups = [data_str]
+                    else:
+                        group_names = [data_str]
+        
+        # Create user data with core fields
+        user_data = {
+            "sid": sid,
+            "groups": groups,
+            "group_names": group_names,
+            "pwdlastset": _convert_timestamp(row.get("pwdlastset")),
+            "lastlogon": _convert_timestamp(row.get("lastlogon"))
+        }
+        
+        # Preserve ALL additional BloodHound attributes for future extensibility
+        excluded_keys = {
+            "samaccountname", "sid", "objectid", "groups", "group_names", 
+            "pwdlastset", "lastlogon"
+        }
+        for key, value in row.items():
+            if key.lower() not in excluded_keys:
+                # Store additional attributes (enabled, admincount, dontreqpreauth, etc.)
+                user_data[key.lower()] = value
+        
+        self.hv_users[sam] = user_data
+        # Create SID lookup with sam field added
+        self.hv_sids[sid] = dict(user_data)
+        self.hv_sids[sid]["sam"] = sam
+        return True
 
     def _load_json(self) -> bool:
         with open(self.path, "r", encoding="utf-8-sig") as f:
@@ -103,54 +398,9 @@ class HighValueLoader:
         if not self._has_fields(data[0].keys()):
             self._schema_help()
             return False
+        
         for row in data:
-            sam_raw = (row.get("SamAccountName") or "").strip().lower()
-            # Accept DOMAIN\user or just user
-            if "\\" in sam_raw:
-                sam = sam_raw.split("\\", 1)[1]
-            else:
-                sam = sam_raw
-            sid = (row.get("sid") or "").strip()
-            
-            # Extract group information
-            groups = []
-            group_names = []
-            
-            # Handle group_names field (array of strings)
-            if "group_names" in row and row["group_names"]:
-                if isinstance(row["group_names"], list):
-                    group_names = [str(g).strip() for g in row["group_names"] if g]
-                else:
-                    # Handle single string case
-                    group_names = [str(row["group_names"]).strip()]
-            
-            # Handle groups field - can be either SIDs or names
-            if "groups" in row and row["groups"]:
-                if isinstance(row["groups"], list):
-                    groups_raw = [str(g).strip() for g in row["groups"] if g]
-                    # If groups contains names (not SIDs), use them as group names
-                    if groups_raw and not groups_raw[0].startswith('S-1-5-'):
-                        group_names.extend(groups_raw)
-                    else:
-                        groups = groups_raw
-                else:
-                    # Handle single string case
-                    groups_str = str(row["groups"]).strip()
-                    if groups_str.startswith('S-1-5-'):
-                        groups = [groups_str]
-                    else:
-                        group_names.append(groups_str)
-            
-            self.hv_users[sam] = {
-                "sid": sid,
-                "groups": groups,
-                "group_names": group_names
-            }
-            self.hv_sids[sid] = {
-                "sam": sam,
-                "groups": groups,
-                "group_names": group_names
-            }
+            self._process_user_data(row)
         return True
 
     def _load_csv(self) -> bool:
@@ -160,52 +410,14 @@ class HighValueLoader:
             if not self._has_fields(reader.fieldnames):
                 self._schema_help()
                 return False
+            
+            # Check if this is a lazy query format (all_props) and warn about CSV limitations
+            if reader.fieldnames and "all_props" in [h.strip().lower() for h in reader.fieldnames]:
+                warn("CSV format detected with 'all_props' field (lazy query)")
+                warn("RECOMMENDATION: Use JSON format for lazy queries - CSV parsing may be inaccurate")
+            
             for row in reader:
-                raw_sam = (row.get("SamAccountName") or "").strip().strip('"').lower()
-                if "\\" in raw_sam:
-                    sam = raw_sam.split("\\", 1)[1]
-                else:
-                    sam = raw_sam
-                sid = (row.get("sid") or "").strip().strip('"')
-                
-                # Extract group information
-                groups = []
-                group_names = []
-                
-                # Handle group_names field 
-                if "group_names" in row and row["group_names"]:
-                    group_names_raw = row["group_names"].strip().strip('"')
-                    if group_names_raw.startswith('[') and group_names_raw.endswith(']'):
-                        # JSON array format
-                        try:
-                            group_names = json.loads(group_names_raw)
-                        except:
-                            group_names = [group_names_raw.strip('[]').strip('"')]
-                    else:
-                        group_names = [group_names_raw]
-                
-                # Handle groups field (SIDs)
-                if "groups" in row and row["groups"]:
-                    groups_raw = row["groups"].strip().strip('"')
-                    if groups_raw.startswith('[') and groups_raw.endswith(']'):
-                        # JSON array format
-                        try:
-                            groups = json.loads(groups_raw)
-                        except:
-                            groups = [groups_raw.strip('[]').strip('"')]
-                    else:
-                        groups = [groups_raw]
-                
-                self.hv_users[sam] = {
-                    "sid": sid,
-                    "groups": groups,
-                    "group_names": group_names
-                }
-                self.hv_sids[sid] = {
-                    "sam": sam,
-                    "groups": groups,
-                    "group_names": group_names
-                }
+                self._process_user_data(row)
         return True
 
     def check_highvalue(self, runas: str) -> bool:
@@ -254,7 +466,53 @@ class HighValueLoader:
         matching_groups = []
         
         for group_name in group_names:
-            if group_name in TIER0_GROUPS:
-                matching_groups.append(group_name)
+            # Handle domain-qualified group names (e.g., "DOMAIN ADMINS@DOMAIN.COM")
+            # Extract the base group name before the @ symbol
+            base_group_name = group_name.split('@')[0].strip()
+            
+            # Check both original and base group name for flexibility (case-insensitive)
+            for tier0_group in TIER0_GROUPS:
+                if (group_name.lower() == tier0_group.lower() or 
+                    base_group_name.lower() == tier0_group.lower()):
+                    matching_groups.append(group_name)
+                    break  # Found a match, no need to check other TIER0_GROUPS
         
         return len(matching_groups) > 0, matching_groups
+
+    def analyze_password_age(self, runas: str, task_date: str) -> Tuple[str, str]:
+        # Simple boolean password analysis for DPAPI dump viability.
+        # Returns (status, explanation) tuple.
+        #
+        # Args:
+        #     runas: The user account running the task (DOMAIN\\user or SID)
+        #     task_date: Task creation date (ISO format: 2025-09-18T23:04:37.3089851)
+        #
+        # Returns:
+        #     Tuple of (status, explanation) where status is one of:
+        #     - "GOOD": Stored password likely valid for DPAPI dump
+        #     - "BAD": Stored password likely invalid, DPAPI dump unlikely to work
+        #     - "UNKNOWN": Insufficient data for analysis
+        if not runas or not task_date:
+            return "UNKNOWN", "Insufficient data for password age analysis"
+        
+        val = runas.strip()
+        user_data = None
+        
+        # Look up user data (same logic as check_tier0)
+        if val.upper().startswith("S-1-5-"):
+            user_data = self.hv_sids.get(val)
+        else:
+            if "\\" in val:
+                sam = val.split("\\", 1)[1].lower()
+            else:
+                sam = val.lower()
+            user_data = self.hv_users.get(sam)
+        
+        if not user_data:
+            return "UNKNOWN", "User not found in BloodHound data"
+        
+        pwd_change_date = user_data.get("pwdlastset")
+        if not pwd_change_date:
+            return "UNKNOWN", "Password change date not available in BloodHound data"
+        
+        return _analyze_password_freshness(task_date, pwd_change_date)
