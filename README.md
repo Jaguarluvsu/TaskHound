@@ -102,6 +102,16 @@ TaskHound accepts CSV or JSON files with the following required fields:
 - `groups` or `group_names` (optional, for Tier 0 detection)
 - `pwdlastset` and `lastlogon` (optional, for password age analysis)
 
+#### Quick High-Value Marking (Warning: can be heavy and cause False Positives)
+```cypher
+// Mark all accounts with "ADMIN" in the name as high-value
+MATCH (n) WHERE toUpper(n.name) CONTAINS "ADMIN"
+OR toUpper(n.azname) CONTAINS "ADMIN"  
+OR toUpper(n.objectid) CONTAINS "ADMIN"
+SET n.highvalue = true, n.highvaluereason = 'Node matched ADMIN keyword'
+RETURN n
+```
+
 #### Basic High-Value Users Query
 ```cypher
 MATCH (u:User {highvalue:true})
@@ -136,17 +146,6 @@ ORDER BY SamAccountName
 TaskHound automatically resolves Windows SIDs to human-readable usernames for improved readability when encountered in a task.
 Before using any outbound connection, it will try to resolve them using the supplied BloodHound data.
 If there is no data found or wasn't supplied, taskhound will then try to look up the SID via LDAP unless supressed with `--no-ldap`
-
-
-#### Quick High-Value Marking (Warning: can be heavy and cause False Positives)
-```cypher
-// Mark all accounts with "ADMIN" in the name as high-value
-MATCH (n) WHERE toUpper(n.name) CONTAINS "ADMIN"
-OR toUpper(n.azname) CONTAINS "ADMIN"  
-OR toUpper(n.objectid) CONTAINS "ADMIN"
-SET n.highvalue = true, n.highvaluereason = 'Node matched ADMIN keyword'
-RETURN n
-```
 
 ## EXPERIMENTAL Features
 
