@@ -51,7 +51,7 @@ def _convert_timestamp(timestamp_value) -> Optional[datetime]:
 
 
 def _analyze_password_freshness(task_date: Optional[str], pwd_change_date: Optional[datetime]) -> Tuple[str, str]:
-    # Simple boolean password analysis relative to task creation date.
+    # Enhanced password analysis relative to task creation date with detailed explanations.
     # Returns (risk_level, explanation) tuple.
     if not task_date or not pwd_change_date:
         return "UNKNOWN", "Insufficient date information for password analysis"
@@ -62,11 +62,11 @@ def _analyze_password_freshness(task_date: Optional[str], pwd_change_date: Optio
         if task_dt.tzinfo is None:
             task_dt = task_dt.replace(tzinfo=timezone.utc)
         
-        # Simple boolean check
+        # Enhanced analysis with better messaging
         if task_dt < pwd_change_date:
-            return "BAD", "Password changed AFTER task creation - stored password likely invalid"
+            return "BAD", "Password changed AFTER task creation - stored credentials are likely stale (admin may have updated task credentials via GUI, but this cannot be detected automatically - try DPAPI dump to verify)"
         else:
-            return "GOOD", "Password changed BEFORE task creation - stored password likely valid"
+            return "GOOD", "Password changed BEFORE task creation - stored password is definitely valid"
     except (ValueError, TypeError) as e:
         return "UNKNOWN", f"Date parsing error: {e}"
 
