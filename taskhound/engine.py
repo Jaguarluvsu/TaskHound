@@ -118,19 +118,39 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
         if no_saved_creds:
             row["credentials_hint"] = "no_saved_credentials"
 
-        if hv and hv.loaded and hv.check_highvalue(runas):
-            # High-value match — mark as privileged if credentials are stored (or show unsaved creds)
-            if row.get("credentials_hint") == "no_saved_credentials":
-                reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
-            else:
-                reason = "High Value match found"
-            # Only include tasks that store credentials (or show_unsaved_creds is True)
-            if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
-                priv_count += 1
-                row["type"] = "PRIV"
-                row["reason"] = reason
-        else:
+        # Check for Tier 0 first, then high-value
+        classified = False
+        if hv and hv.loaded:
+            # Check Tier 0 classification
+            is_tier0, tier0_groups = hv.check_tier0(runas)
+            if is_tier0:
+                # Tier 0 match
+                if row.get("credentials_hint") == "no_saved_credentials":
+                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                else:
+                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)}"
+                # Only include tasks that store credentials (or show_unsaved_creds is True)
+                if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_count += 1
+                    row["type"] = "TIER-0"
+                    row["reason"] = reason
+                classified = True
+            elif hv.check_highvalue(runas):
+                # High-value match — mark as privileged if credentials are stored (or show unsaved creds)
+                if row.get("credentials_hint") == "no_saved_credentials":
+                    reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                else:
+                    reason = "High Value match found"
+                # Only include tasks that store credentials (or show_unsaved_creds is True)
+                if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_count += 1
+                    row["type"] = "PRIV"
+                    row["reason"] = reason
+                classified = True
+        
+        if not classified:
             # Only print TASK entries for domain users OR users with stored credentials,
             # unless they are explicitly marked as having no saved credentials (and user didn't ask to see them)
             if looks_like_domain_user(runas) or row.get("credentials_hint") == "stored_credentials":
@@ -180,22 +200,31 @@ def _build_row(host: str, rel_path: str, meta: Dict[str, str]) -> Dict[str, Opti
 def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, date: str, extra_reason: Optional[str] = None) -> List[str]:
     # Format a small pretty-print block used by the CLI output.
     #
-    # kind is either 'PRIV' (privileged/high-value) or 'TASK' (normal task).
-    header = "[PRIV]" if kind == "PRIV" else "[TASK]"
-    base = [f"\n{header} {rel_path}", f"       RunAs  : {runas}", f"       What   : {what}"]
+    # kind is either 'TIER-0', 'PRIV' (privileged/high-value) or 'TASK' (normal task).
+    if kind == "TIER-0":
+        header = "[TIER-0]"
+    elif kind == "PRIV":
+        header = "[PRIV]"
+    else:
+        header = "[TASK]"
+        
+    base = [f"\n{header} {rel_path}", f"        RunAs  : {runas}", f"        What   : {what}"]
     if author:
-        base.append(f"       Author : {author}")
+        base.append(f"        Author : {author}")
     if date:
-        base.append(f"       Date   : {date}")
-    if kind == "PRIV":
+        base.append(f"        Date   : {date}")
+    
+    if kind in ["TIER-0", "PRIV"]:
         if extra_reason:
-            base.append(f"       Reason : {extra_reason}")
+            base.append(f"        Reason : {extra_reason}")
+        elif kind == "TIER-0":
+            base.append("        Reason : Tier 0 privileged group membership")
         else:
-            base.append("       Reason : High Value match found")
+            base.append("        Reason : High Value match found")
         # Add next step if this is a privileged user match, saved credentials, and (optionally) Credential Guard inactive
         # This logic is only for pretty output, so we check for the typical reason string and absence of 'no_saved_credentials'
         if (not extra_reason or "no saved credentials" not in extra_reason.lower()):
-            base.append("       Next Step: DPAPI Dump / Task Manipulation")
+            base.append("        Next Step: DPAPI Dump / Task Manipulation")
     return base
 
 
@@ -314,17 +343,37 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
             row["credentials_hint"] = "no_saved_credentials"
         elif logon_type.lower() == "password":
             row["credentials_hint"] = "stored_credentials"
-        if hv and hv.loaded and hv.check_highvalue(runas):
-            if row.get("credentials_hint") == "no_saved_credentials":
-                reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
-            else:
-                reason = "High Value match found"
-            if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
-                priv_count += 1
-                row["type"] = "PRIV"
-                row["reason"] = reason
-        else:
+        
+        # Check for Tier 0 first, then high-value
+        classified = False
+        if hv and hv.loaded:
+            # Check Tier 0 classification
+            is_tier0, tier0_groups = hv.check_tier0(runas)
+            if is_tier0:
+                # Tier 0 match
+                if row.get("credentials_hint") == "no_saved_credentials":
+                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                else:
+                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)}"
+                if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_count += 1
+                    row["type"] = "TIER-0"
+                    row["reason"] = reason
+                classified = True
+            elif hv.check_highvalue(runas):
+                if row.get("credentials_hint") == "no_saved_credentials":
+                    reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                else:
+                    reason = "High Value match found"
+                if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
+                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_count += 1
+                    row["type"] = "PRIV"
+                    row["reason"] = reason
+                classified = True
+        
+        if not classified:
             # Show tasks for domain users OR users with stored credentials
             if looks_like_domain_user(runas) or row.get("credentials_hint") == "stored_credentials":
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
