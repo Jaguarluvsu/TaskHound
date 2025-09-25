@@ -39,7 +39,8 @@ def main():
             show_unsaved_creds=args.unsaved_creds,
             include_local=args.include_local,
             all_rows=all_rows,
-            debug=args.debug
+            debug=args.debug,
+            no_ldap=args.no_ldap
         )
         print_results(lines)
     else:
@@ -73,6 +74,7 @@ def main():
                 show_unsaved_creds=args.unsaved_creds,
                 backup_dir=args.backup,
                 credguard_detect=args.credguard_detect,
+                no_ldap=args.no_ldap,
             )
             print_results(lines)
             if args.plain and lines:

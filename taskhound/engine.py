@@ -17,11 +17,13 @@ from .parsers.task_xml import parse_task_xml
 from .parsers.highvalue import HighValueLoader
 from .utils.helpers import looks_like_domain_user
 from .utils.logging import good, warn, info
+from .utils.sid_resolver import format_runas_with_sid_resolution
 from .smb.credguard import check_credential_guard
 
 
 def process_offline_directory(offline_dir: str, hv: Optional[HighValueLoader], 
-                             show_unsaved_creds: bool, include_local: bool, all_rows: List[Dict], debug: bool) -> List[str]:
+                             show_unsaved_creds: bool, include_local: bool, all_rows: List[Dict], debug: bool,
+                             no_ldap: bool = False) -> List[str]:
     # Process previously collected XML files from a directory structure.
     #
     # Expected directory structure:
@@ -55,14 +57,15 @@ def process_offline_directory(offline_dir: str, hv: Optional[HighValueLoader],
     
     for host in host_dirs:
         host_path = os.path.join(offline_dir, host)
-        lines = _process_offline_host(host, host_path, hv, show_unsaved_creds, include_local, all_rows, debug)
+        lines = _process_offline_host(host, host_path, hv, show_unsaved_creds, include_local, all_rows, debug, no_ldap)
         out_lines.extend(lines)
     
     return out_lines
 
 
 def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLoader],
-                         show_unsaved_creds: bool, include_local: bool, all_rows: List[Dict], debug: bool) -> List[str]:
+                         show_unsaved_creds: bool, include_local: bool, all_rows: List[Dict], debug: bool,
+                         no_ldap: bool = False) -> List[str]:
     # Process XML files for a single host from offline directory
     out_lines: List[str] = []
     xml_files = []
@@ -138,7 +141,9 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
                 
                 # Only include tasks that store credentials (or show_unsaved_creds is True)
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
+                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), 
+                                                   extra_reason=reason, password_analysis=password_analysis, 
+                                                   hv=hv, no_ldap=no_ldap))
                     priv_count += 1
                     row["type"] = "TIER-0"
                     row["reason"] = reason
@@ -159,7 +164,9 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
                         
                 # Only include tasks that store credentials (or show_unsaved_creds is True)
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
+                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), 
+                                                   extra_reason=reason, password_analysis=password_analysis, 
+                                                   hv=hv, no_ldap=no_ldap))
                     priv_count += 1
                     row["type"] = "PRIV"
                     row["reason"] = reason
@@ -182,7 +189,8 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
                                  (include_local and not looks_like_domain_user(runas)))
             if should_include_task:
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date"), password_analysis=password_analysis))
+                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date"), 
+                                                   password_analysis=password_analysis, hv=hv, no_ldap=no_ldap))
             row["password_analysis"] = password_analysis
 
         # By default omit tasks that explicitly have no saved credentials unless the user asked to show them
@@ -225,7 +233,11 @@ def _build_row(host: str, rel_path: str, meta: Dict[str, str]) -> Dict[str, Opti
     }
 
 
-def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, date: str, extra_reason: Optional[str] = None, password_analysis: Optional[str] = None) -> List[str]:
+def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, date: str, 
+                  extra_reason: Optional[str] = None, password_analysis: Optional[str] = None,
+                  hv: Optional[HighValueLoader] = None, no_ldap: bool = False, 
+                  domain: Optional[str] = None, username: Optional[str] = None, 
+                  password: Optional[str] = None, hashes: Optional[str] = None) -> List[str]:
     # Format a small pretty-print block used by the CLI output.
     #
     # kind is either 'TIER-0', 'PRIV' (privileged/high-value) or 'TASK' (normal task).
@@ -235,8 +247,13 @@ def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, 
         header = "[PRIV]"
     else:
         header = "[TASK]"
+    
+    # Resolve SID in RunAs field for better display
+    display_runas, resolved_username = format_runas_with_sid_resolution(
+        runas, hv, no_ldap, domain, username, password, hashes
+    )
         
-    base = [f"\n{header} {rel_path}", f"        RunAs  : {runas}", f"        What   : {what}"]
+    base = [f"\n{header} {rel_path}", f"        RunAs  : {display_runas}", f"        What   : {what}"]
     if author:
         base.append(f"        Author : {author}")
     if date:
@@ -274,7 +291,7 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
                    hv: Optional[HighValueLoader], debug: bool,
                    all_rows: List[Dict], hashes: Optional[str] = None,
                    show_unsaved_creds: bool = False, backup_dir: Optional[str] = None,
-                   credguard_detect: bool = False) -> List[str]:
+                   credguard_detect: bool = False, no_ldap: bool = False) -> List[str]:
     # Connect to `target`, enumerate scheduled tasks, and return printable lines.
     #
     # - Attempts SMB authentication using either cleartext password or hashes.
@@ -404,7 +421,10 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
                         password_analysis = pwd_analysis
                 
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
+                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), 
+                                                   extra_reason=reason, password_analysis=password_analysis, 
+                                                   hv=hv, no_ldap=no_ldap, domain=domain, username=username, 
+                                                   password=password, hashes=hashes))
                     priv_count += 1
                     row["type"] = "TIER-0"
                     row["reason"] = reason
@@ -423,7 +443,10 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
                         password_analysis = pwd_analysis
                         
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
+                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), 
+                                                   extra_reason=reason, password_analysis=password_analysis, 
+                                                   hv=hv, no_ldap=no_ldap, domain=domain, username=username, 
+                                                   password=password, hashes=hashes))
                     priv_count += 1
                     row["type"] = "PRIV"
                     row["reason"] = reason
@@ -445,7 +468,9 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
                                  (include_local and not looks_like_domain_user(runas)))
             if should_include_task:
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date"), password_analysis=password_analysis))
+                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date"), 
+                                                   password_analysis=password_analysis, hv=hv, no_ldap=no_ldap, 
+                                                   domain=domain, username=username, password=password, hashes=hashes))
             row["password_analysis"] = password_analysis
             
         if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):

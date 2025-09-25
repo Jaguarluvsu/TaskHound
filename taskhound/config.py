@@ -32,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--include-all", action="store_true",
                     help="Include ALL tasks (equivalent to --include-ms --include-local --unsaved-creds) - WARNING: VERY SLOW AND NOISY!")
     scan.add_argument("--unsaved-creds", action='store_true', help="Show scheduled tasks that do not store credentials (unsaved credentials)")
+    scan.add_argument("--no-ldap", action='store_true', 
+                    help="Disable LDAP queries for SID resolution (improves OPSEC but reduces user-friendliness)")
     scan.add_argument("--credguard-detect", action='store_true', default=False,
         help="EXPERIMENTAL: Attempt to detect Credential Guard status via remote registry (default: off). Only use if you know your environment supports it.")
 
