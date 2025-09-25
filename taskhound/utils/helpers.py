@@ -13,14 +13,24 @@ def looks_like_domain_user(runas: str) -> bool:
     # (including common German translations seen in German-language
     # Windows installations). It treats values with a backslash (NETBIOS\user)
     # or values containing a dot (user@domain-like or UPN) as domain-like.
+    # It also recognizes domain SIDs (S-1-5-21-*-*-*-RID) as domain accounts.
     if not runas:
         return False
 
     val = runas.strip()
 
-    # Exclude well-known local SIDs (SYSTEM, LOCAL SERVICE, NETWORK SERVICE)
-    up = val.upper()
-    if up.startswith("S-1-5-18") or up.startswith("S-1-5-19") or up.startswith("S-1-5-20"):
+    # Check if this is a SID format
+    if val.upper().startswith("S-1-"):
+        # Exclude well-known local SIDs (SYSTEM, LOCAL SERVICE, NETWORK SERVICE)
+        up = val.upper()
+        if up.startswith("S-1-5-18") or up.startswith("S-1-5-19") or up.startswith("S-1-5-20"):
+            return False
+        
+        # Domain SIDs have pattern S-1-5-21-domain-domain-domain-rid
+        if up.startswith("S-1-5-21-"):
+            return True
+        
+        # Other SIDs are likely not domain users
         return False
 
     # If username contains a backslash (DOMAIN\user), check for local/system principals
