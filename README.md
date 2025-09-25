@@ -62,6 +62,12 @@ TTTTT  AAA   SSS  K   K H   H  OOO  U   U N   N DDDD
         Password Analysis : Password changed BEFORE task creation - stored password likely valid
         Next Step: DPAPI Dump / Task Manipulation
 
+[TASK] Windows\System32\Tasks\SIDTask  
+        RunAs  : Administrator (S-1-5-21-3211413907-14631080-1147255650-500)
+        What   : C:\Windows\System32\cmd.exe /c backup
+        Author : SYSTEM
+        Date   : 2025-09-15T08:15:22.1234567
+
 [TASK] Windows\System32\Tasks\UserTask
         RunAs  : THESIMPSONS\bart.simpson
         What   : C:\Windows\System32\notepad.exe
@@ -73,7 +79,7 @@ SUMMARY
 ================================================================================
 HOSTNAME                | TIER-0_TASKS | PRIVILEGED_TASKS | NORMAL_TASKS
 ------------------------------------------------------------------------
-moe.thesimpsons.local   | 1            | 1                | 5           
+moe.thesimpsons.local   | 1            | 1                | 6           
 ================================================================================
 [+] Check the output above or your saved files for detailed task information
 ```
@@ -125,6 +131,13 @@ ORDER BY SamAccountName
 
 > **Note**: The lazy query format only works with JSON export. The `all_props` field contains all BloodHound user attributes automatically, making it much more maintainable than manually specifying each field.
 
+## SID Resolution
+
+TaskHound automatically resolves Windows SIDs to human-readable usernames for improved readability when encountered in a task.
+Before using any outbound connection, it will try to resolve them using the supplied BloodHound data.
+If there is no data found or wasn't supplied, taskhound will then try to look up the SID via LDAP unless supressed with `--no-ldap`
+
+
 #### Quick High-Value Marking (Warning: can be heavy and cause False Positives)
 ```cypher
 // Mark all accounts with "ADMIN" in the name as high-value
@@ -150,10 +163,10 @@ See [BOF/README.md](BOF/README.md) for a Beacon Object File implementation of th
 ## Full Usage Reference
 
 ```
-usage: taskhound [-h] [-u USERNAME] [-p PASSWORD] [-d DOMAIN] [--hashes HASHES] 
+Usage: taskhound [-h] [-u USERNAME] [-p PASSWORD] [-d DOMAIN] [--hashes HASHES] 
                  [-k] [-t TARGET] [--targets-file TARGETS_FILE] [--dc-ip DC_IP]
                  [--offline OFFLINE] [--bh-data BH_DATA] [--include-ms] 
-                 [--include-local] [--include-all] [--unsaved-creds] 
+                 [--include-local] [--include-all] [--unsaved-creds] [--no-ldap]
                  [--credguard-detect] [--plain PLAIN] [--json JSON] [--csv CSV] 
                  [--backup BACKUP] [--no-summary] [--debug]
 
@@ -177,6 +190,7 @@ Scanning:
   --include-all         Include ALL tasks (combines --include-ms, --include-local, 
                         --unsaved-creds - WARNING: very slow and noisy)
   --unsaved-creds       Show tasks without stored credentials
+  --no-ldap             Disable LDAP queries for SID resolution
   --credguard-detect    EXPERIMENTAL: Detect Credential Guard via remote registry
 
 Output:
