@@ -2,7 +2,7 @@
 
 **Windows Privileged Scheduled Task Discovery Tool** for fun and profit.
 
-TaskHound hunts for Windows scheduled tasks that run with privileged accounts and stored credentials. It enumerates tasks over SMB, parses XML configurations, and identifies high-value attack opportunities through BloodHound export support.
+TaskHound hunts for Windows scheduled tasks that run with privileged accounts and stored credentials. It enumerates tasks over SMB, parses XMLs, and identifies high-value attack opportunities through BloodHound export support.
 
 ## Key Features
 
@@ -50,6 +50,7 @@ TTTTT  AAA   SSS  K   K H   H  OOO  U   U N   N DDDD
         Author : THESIMPSONS\Administrator  
         Date   : 2025-09-18T23:04:37.3089851
         Reason : Tier 0 group membership: Domain Admins, Administrators, Enterprise Admins
+        Password Analysis : Password changed BEFORE task creation - stored password likely valid
         Next Step: DPAPI Dump / Task Manipulation
 
 [PRIV] Windows\System32\Tasks\MaintenanceTask
@@ -58,6 +59,7 @@ TTTTT  AAA   SSS  K   K H   H  OOO  U   U N   N DDDD
         Author : THESIMPSONS\Administrator
         Date   : 2025-09-18T23:05:43.0854575
         Reason : High Value match found
+        Password Analysis : Password changed BEFORE task creation - stored password likely valid
         Next Step: DPAPI Dump / Task Manipulation
 
 [TASK] Windows\System32\Tasks\UserTask
@@ -76,72 +78,6 @@ moe.thesimpsons.local   | 1            | 1                | 5
 [+] Check the output above or your saved files for detailed task information
 ```
 
-## Usage
-
-### Authentication Methods
-
-#### Password Authentication
-```bash
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local'
-```
-
-#### NTLM Hashes
-```bash
-taskhound -u 'homer.simpson' --hashes ':252facd066d93dd009d4fd2cd0868384' -d 'thesimpsons.local' -t 'moe.thesimpsons.local'
-```
-
-#### Kerberos (ccache or password)
-```bash
-# Keep in mind to use Hostnames/FQDNs rather than IPs when using Kerberos authentication to avoid NTLM fallback!
-export KRB5CCNAME=./homer.simpson.ccache
-taskhound -u 'homer.simpson' -k -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --dc-ip '192.168.1.10'
-```
-
-### Multiple Targets
-```bash
-# File with one target per line
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' --targets-file targets.txt --bh-data bloodhound_export.json
-```
-
-### BloodHound Integration
-```bash
-# Basic high-value detection
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --bh-data bloodhound_export.json
-```
-
-### Offline Analysis
-```bash
-# Analyze previously collected XML files
-taskhound --offline /path/to/collected/tasks --bh-data bloodhound_export.json
-
-# Backup raw XMLs during collection for later analysis
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --backup ./task_backups
-```
-
-### Export Options
-```bash
-# Save results to CSV
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --csv results.csv
-
-# Save to JSON
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --json results.json
-
-# Disable summary table (shown by default)
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --no-summary
-```
-
-### Advanced Scanning Options
-```bash
-# Include Microsoft tasks (WARNING: slow)
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --include-ms
-
-# Show tasks without stored credentials
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --unsaved-creds
-
-# EXPERIMENTAL: Credential Guard detection
-taskhound -u 'homer.simpson' -p 'P@ssw0rd' -d 'thesimpsons.local' -t 'moe.thesimpsons.local' --credguard-detect
-```
-
 ## BloodHound Integration
 
 ### Tier 0 Detection
@@ -158,6 +94,7 @@ TaskHound accepts CSV or JSON files with the following required fields:
 - `SamAccountName` (required)  
 - `sid` (required)
 - `groups` or `group_names` (optional, for Tier 0 detection)
+- `pwdlastset` and `lastlogon` (optional, for password age analysis)
 
 #### Basic High-Value Users Query
 ```cypher
@@ -172,9 +109,21 @@ MATCH (u:User {highvalue:true})
 OPTIONAL MATCH (u)-[:MemberOf*1..]->(g:Group)
 WITH u, collect(g.name) as groups, collect(g.objectid) as group_sids
 RETURN u.samaccountname AS SamAccountName, u.objectid as sid,
-       groups as group_names, group_sids as groups
+       groups as group_names, group_sids as groups,
+       u.pwdlastset as pwdlastset, u.lastlogon as lastlogon
 ORDER BY u.samaccountname
 ```
+
+#### Lazy Query - Export ALL BloodHound Attributes (Recommended)
+```cypher
+MATCH (u:User {highvalue:true})
+OPTIONAL MATCH (u)-[:MemberOf*1..]->(g:Group)
+WITH u, properties(u) as all_props, collect(g.name) as groups, collect(g.objectid) as group_sids
+RETURN u.samaccountname AS SamAccountName, all_props, groups, group_sids
+ORDER BY SamAccountName
+```
+
+> **Note**: The lazy query format only works with JSON export. The `all_props` field contains all BloodHound user attributes automatically, making it much more maintainable than manually specifying each field.
 
 #### Quick High-Value Marking (Warning: can be heavy and cause False Positives)
 ```cypher
@@ -188,15 +137,15 @@ RETURN n
 
 ## EXPERIMENTAL Features
 
-> **EXPERIMENTAL WARNING**  
-> Features tagged as **EXPERIMENTAL** are **UNSAFE** for production environments. Limited testing has been done in lab environments. Don't blame me if something blows up your op or gets you busted. You have been warned.
+> **WARNING**  
+> Features in this section are **UNSAFE** for production environments. Limited testing has been done in lab environments. Don't blame me if something blows up your op or gets you busted. You have been warned.
 
-### **EXPERIMENTAL** Credential Guard Detection
+### Credential Guard Detection
 
 Checks remote registry for Credential Guard status to determine DPAPI dump feasibility. Results include `"credential_guard": true/false` in output.
 
-### **EXPERIMENTAL** BOF Implementation
-See [BOF/README.md](BOF/README.md) for Beacon Object File implementation supporting AdaptixC2 and similar C2 frameworks.
+### BOF Implementation
+See [BOF/README.md](BOF/README.md) for a Beacon Object File implementation of the core collection functionality.
 
 ## Full Usage Reference
 
@@ -204,9 +153,9 @@ See [BOF/README.md](BOF/README.md) for Beacon Object File implementation support
 usage: taskhound [-h] [-u USERNAME] [-p PASSWORD] [-d DOMAIN] [--hashes HASHES] 
                  [-k] [-t TARGET] [--targets-file TARGETS_FILE] [--dc-ip DC_IP]
                  [--offline OFFLINE] [--bh-data BH_DATA] [--include-ms] 
-                 [--unsaved-creds] [--credguard-detect] [--plain PLAIN] 
-                 [--json JSON] [--csv CSV] [--backup BACKUP] [--no-summary] 
-                 [--debug]
+                 [--include-local] [--include-all] [--unsaved-creds] 
+                 [--credguard-detect] [--plain PLAIN] [--json JSON] [--csv CSV] 
+                 [--backup BACKUP] [--no-summary] [--debug]
 
 Authentication:
   -u, --username        Username (required for online mode)
@@ -224,6 +173,9 @@ Scanning:
   --offline OFFLINE     Parse previously collected XML files from directory
   --bh-data BH_DATA     BloodHound export file (CSV/JSON) for high-value detection
   --include-ms          Include \Microsoft tasks (WARNING: very slow)
+  --include-local       Include local system accounts (NT AUTHORITY\SYSTEM, etc.)
+  --include-all         Include ALL tasks (combines --include-ms, --include-local, 
+                        --unsaved-creds - WARNING: very slow and noisy)
   --unsaved-creds       Show tasks without stored credentials
   --credguard-detect    EXPERIMENTAL: Detect Credential Guard via remote registry
 
@@ -239,7 +191,7 @@ Output:
 ## OPSEC Considerations
 
 TaskHound relies heavily on impacket for SMB/RPC/Kerberos operations. Standard impacket IOCs apply.
-**For better OPSEC**: Use the BOF implementation or collect tasks manually, then analyze offline.
+**If you really care about OPSEC**: Use the BOF implementation or collect tasks manually, then analyze offline.
 
 ## Roadmap
 
@@ -248,7 +200,7 @@ When caffeine intake and free time align:
 - Support for more languages via custom mapping logic
 - True BloodHound Community Edition export compatibility
 - OpenGraph integration for attack path mapping  
-- Dedicated NetExec module
+- Dedicated NetExec module (PR in Review)
 - Automated credential blob extraction for offline decryption
 
 ## Disclaimer
@@ -257,7 +209,7 @@ TaskHound is strictly an **audit and educational tool**. Use only in environment
 
 ## Contributing
 
-PRs welcome. Don't expect wonders though - half of this was caffeine-induced vibe-coding.
+PRs to the dev branch welcome. Don't expect wonders though - half of this was caffeine-induced vibe-coding.
 
 ## License
 

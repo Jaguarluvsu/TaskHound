@@ -9,7 +9,7 @@ import traceback
 import os
 from typing import List, Dict, Optional, Tuple
 
-from impacket.smbconnection import SessionError
+from impacket.smbconnection import SMBConnection, SessionError
 
 from .smb.connection import smb_connect
 from .smb.tasks import smb_listdir, crawl_tasks
@@ -21,7 +21,7 @@ from .smb.credguard import check_credential_guard
 
 
 def process_offline_directory(offline_dir: str, hv: Optional[HighValueLoader], 
-                             show_unsaved_creds: bool, all_rows: List[Dict], debug: bool) -> List[str]:
+                             show_unsaved_creds: bool, include_local: bool, all_rows: List[Dict], debug: bool) -> List[str]:
     # Process previously collected XML files from a directory structure.
     #
     # Expected directory structure:
@@ -55,14 +55,14 @@ def process_offline_directory(offline_dir: str, hv: Optional[HighValueLoader],
     
     for host in host_dirs:
         host_path = os.path.join(offline_dir, host)
-        lines = _process_offline_host(host, host_path, hv, show_unsaved_creds, all_rows, debug)
+        lines = _process_offline_host(host, host_path, hv, show_unsaved_creds, include_local, all_rows, debug)
         out_lines.extend(lines)
     
     return out_lines
 
 
 def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLoader],
-                         show_unsaved_creds: bool, all_rows: List[Dict], debug: bool) -> List[str]:
+                         show_unsaved_creds: bool, include_local: bool, all_rows: List[Dict], debug: bool) -> List[str]:
     # Process XML files for a single host from offline directory
     out_lines: List[str] = []
     xml_files = []
@@ -124,38 +124,66 @@ def _process_offline_host(hostname: str, host_dir: str, hv: Optional[HighValueLo
             # Check Tier 0 classification
             is_tier0, tier0_groups = hv.check_tier0(runas)
             if is_tier0:
-                # Tier 0 match
+                # Tier 0 match - analyze password age if credentials are stored
+                reason = f"Tier 0 group membership: {', '.join(tier0_groups)}"
+                password_analysis = None
+                
                 if row.get("credentials_hint") == "no_saved_credentials":
-                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                    reason = f"{reason} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
                 else:
-                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)}"
+                    # Analyze password age for DPAPI dump viability
+                    risk_level, pwd_analysis = hv.analyze_password_age(runas, meta.get("date"))
+                    if risk_level != "UNKNOWN":
+                        password_analysis = pwd_analysis
+                
                 # Only include tasks that store credentials (or show_unsaved_creds is True)
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
                     priv_count += 1
                     row["type"] = "TIER-0"
                     row["reason"] = reason
+                    row["password_analysis"] = password_analysis
                 classified = True
             elif hv.check_highvalue(runas):
                 # High-value match — mark as privileged if credentials are stored (or show unsaved creds)
+                reason = "High Value match found"
+                password_analysis = None
+                
                 if row.get("credentials_hint") == "no_saved_credentials":
-                    reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                    reason = f"{reason} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
                 else:
-                    reason = "High Value match found"
+                    # Analyze password age for DPAPI dump viability
+                    risk_level, pwd_analysis = hv.analyze_password_age(runas, meta.get("date"))
+                    if risk_level != "UNKNOWN":
+                        password_analysis = pwd_analysis
+                        
                 # Only include tasks that store credentials (or show_unsaved_creds is True)
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
                     priv_count += 1
                     row["type"] = "PRIV"
                     row["reason"] = reason
+                    row["password_analysis"] = password_analysis
                 classified = True
         
         if not classified:
-            # Only print TASK entries for domain users OR users with stored credentials,
+            # Regular tasks - still analyze password age if credentials are stored and BloodHound data available
+            password_analysis = None
+            if hv and hv.loaded and row.get("credentials_hint") == "stored_credentials":
+                # Analyze password age even for non-privileged accounts
+                risk_level, pwd_analysis = hv.analyze_password_age(runas, meta.get("date"))
+                if risk_level != "UNKNOWN":
+                    password_analysis = pwd_analysis
+            
+            # Only print TASK entries for domain users OR users with stored credentials OR local accounts (if requested),
             # unless they are explicitly marked as having no saved credentials (and user didn't ask to see them)
-            if looks_like_domain_user(runas) or row.get("credentials_hint") == "stored_credentials":
+            should_include_task = (looks_like_domain_user(runas) or 
+                                 row.get("credentials_hint") == "stored_credentials" or
+                                 (include_local and not looks_like_domain_user(runas)))
+            if should_include_task:
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date")))
+                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date"), password_analysis=password_analysis))
+            row["password_analysis"] = password_analysis
 
         # By default omit tasks that explicitly have no saved credentials unless the user asked to show them
         if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
@@ -197,7 +225,7 @@ def _build_row(host: str, rel_path: str, meta: Dict[str, str]) -> Dict[str, Opti
     }
 
 
-def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, date: str, extra_reason: Optional[str] = None) -> List[str]:
+def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, date: str, extra_reason: Optional[str] = None, password_analysis: Optional[str] = None) -> List[str]:
     # Format a small pretty-print block used by the CLI output.
     #
     # kind is either 'TIER-0', 'PRIV' (privileged/high-value) or 'TASK' (normal task).
@@ -221,15 +249,28 @@ def _format_block(kind: str, rel_path: str, runas: str, what: str, author: str, 
             base.append("        Reason : Tier 0 privileged group membership")
         else:
             base.append("        Reason : High Value match found")
-        # Add next step if this is a privileged user match, saved credentials, and (optionally) Credential Guard inactive
+        
+        # Add password analysis if available
+        if password_analysis:
+            base.append(f"        Password Analysis : {password_analysis}")
+            
+        # Add consistent next step for all privileged tasks
         # This logic is only for pretty output, so we check for the typical reason string and absence of 'no_saved_credentials'
         if (not extra_reason or "no saved credentials" not in extra_reason.lower()):
-            base.append("        Next Step: DPAPI Dump / Task Manipulation")
+            base.append("        Next Step: Try DPAPI Dump / Task Manipulation")
+    
+    # Add password analysis for regular TASK entries too (if available)
+    elif kind == "TASK" and password_analysis:
+        base.append(f"        Password Analysis : {password_analysis}")
+        
+        # Add consistent next step for regular tasks with password analysis
+        base.append("        Next Step: Try DPAPI Dump / Task Manipulation")
+    
     return base
 
 
 def process_target(target: str, domain: str, username: str, password: Optional[str],
-                   kerberos: bool, dc_ip: Optional[str], include_ms: bool,
+                   kerberos: bool, dc_ip: Optional[str], include_ms: bool, include_local: bool,
                    hv: Optional[HighValueLoader], debug: bool,
                    all_rows: List[Dict], hashes: Optional[str] = None,
                    show_unsaved_creds: bool = False, backup_dir: Optional[str] = None,
@@ -350,34 +391,63 @@ def process_target(target: str, domain: str, username: str, password: Optional[s
             # Check Tier 0 classification
             is_tier0, tier0_groups = hv.check_tier0(runas)
             if is_tier0:
-                # Tier 0 match
+                # Tier 0 match - analyze password age if credentials are stored
+                reason = f"Tier 0 group membership: {', '.join(tier0_groups)}"
+                password_analysis = None
+                
                 if row.get("credentials_hint") == "no_saved_credentials":
-                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                    reason = f"{reason} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
                 else:
-                    reason = f"Tier 0 group membership: {', '.join(tier0_groups)}"
+                    # Analyze password age for DPAPI dump viability
+                    risk_level, pwd_analysis = hv.analyze_password_age(runas, meta.get("date"))
+                    if risk_level != "UNKNOWN":
+                        password_analysis = pwd_analysis
+                
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_lines.extend(_format_block("TIER-0", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
                     priv_count += 1
                     row["type"] = "TIER-0"
                     row["reason"] = reason
+                    row["password_analysis"] = password_analysis
                 classified = True
             elif hv.check_highvalue(runas):
+                reason = "High Value match found"
+                password_analysis = None
+                
                 if row.get("credentials_hint") == "no_saved_credentials":
-                    reason = "High Value match found (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
+                    reason = f"{reason} (no saved credentials — DPAPI dump not applicable; manipulation requires an interactive session)"
                 else:
-                    reason = "High Value match found"
+                    # Analyze password age for DPAPI dump viability
+                    risk_level, pwd_analysis = hv.analyze_password_age(runas, meta.get("date"))
+                    if risk_level != "UNKNOWN":
+                        password_analysis = pwd_analysis
+                        
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason))
+                    priv_lines.extend(_format_block("PRIV", rel_path, runas, what, meta.get("author"), meta.get("date"), extra_reason=reason, password_analysis=password_analysis))
                     priv_count += 1
                     row["type"] = "PRIV"
                     row["reason"] = reason
+                    row["password_analysis"] = password_analysis
                 classified = True
         
         if not classified:
-            # Show tasks for domain users OR users with stored credentials
-            if looks_like_domain_user(runas) or row.get("credentials_hint") == "stored_credentials":
+            # Regular tasks - still analyze password age if credentials are stored and BloodHound data available
+            password_analysis = None
+            if hv and hv.loaded and row.get("credentials_hint") == "stored_credentials":
+                # Analyze password age even for non-privileged accounts
+                risk_level, pwd_analysis = hv.analyze_password_age(runas, meta.get("date"))
+                if risk_level != "UNKNOWN":
+                    password_analysis = pwd_analysis
+            
+            # Show tasks for domain users OR users with stored credentials OR local accounts (if requested)
+            should_include_task = (looks_like_domain_user(runas) or 
+                                 row.get("credentials_hint") == "stored_credentials" or
+                                 (include_local and not looks_like_domain_user(runas)))
+            if should_include_task:
                 if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
-                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date")))
+                    task_lines.extend(_format_block("TASK", rel_path, runas, what, meta.get("author"), meta.get("date"), password_analysis=password_analysis))
+            row["password_analysis"] = password_analysis
+            
         if not (row.get("credentials_hint") == "no_saved_credentials" and not show_unsaved_creds):
             all_rows.append(row)
 

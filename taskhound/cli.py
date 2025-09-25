@@ -37,6 +37,7 @@ def main():
             offline_dir=args.offline,
             hv=hv,
             show_unsaved_creds=args.unsaved_creds,
+            include_local=args.include_local,
             all_rows=all_rows,
             debug=args.debug
         )
@@ -64,6 +65,7 @@ def main():
                 kerberos=args.kerberos,
                 dc_ip=args.dc_ip,
                 include_ms=args.include_ms,
+                include_local=args.include_local,
                 hv=hv,
                 debug=args.debug,
                 all_rows=all_rows,

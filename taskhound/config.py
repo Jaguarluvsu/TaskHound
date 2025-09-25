@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--bh-data", help="Path to High Value Target export (csv/json from Neo4j)")
     scan.add_argument("--include-ms", action="store_true",
                     help="Also include \\Microsoft scheduled tasks (WARNING: very slow)")
+    scan.add_argument("--include-local", action="store_true",
+                    help="Include tasks running as local system accounts (NT AUTHORITY\\SYSTEM, S-1-5-18, etc.)")
+    scan.add_argument("--include-all", action="store_true",
+                    help="Include ALL tasks (equivalent to --include-ms --include-local --unsaved-creds) - WARNING: VERY SLOW AND NOISY!")
     scan.add_argument("--unsaved-creds", action='store_true', help="Show scheduled tasks that do not store credentials (unsaved credentials)")
     scan.add_argument("--credguard-detect", action='store_true', default=False,
         help="EXPERIMENTAL: Attempt to detect Credential Guard status via remote registry (default: off). Only use if you know your environment supports it.")
@@ -45,6 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 def validate_args(args):
+    # Handle --include-all flag expansion and warnings
+    if args.include_all:
+        print("[!] WARNING: --include-all flag detected!")
+        print("[!] This will include ALL tasks: Microsoft tasks, local system accounts, and unsaved credentials")
+        print("[!] This can be VERY SLOW and VERY NOISY - consider using specific flags instead")
+        print("[!] Equivalent to: --include-ms --include-local --unsaved-creds")
+        print()
+        # Automatically enable the other flags
+        args.include_ms = True
+        args.include_local = True
+        args.unsaved_creds = True
+    
     # Offline mode validation
     if args.offline:
         # In offline mode, check that the path exists and is a directory
